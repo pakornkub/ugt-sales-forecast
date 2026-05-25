@@ -1,0 +1,114 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Libre+Baskerville:italic@400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-serif: "Libre Baskerville", serif;
+}
+
+@layer base {
+  body {
+    @apply bg-[#F8FAFC] text-slate-800 antialiased;
+  }
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-200 rounded-full hover:bg-slate-300 transition-colors;
+}
+
+.forecast-table-scroll {
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
+}
+
+.forecast-table-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.forecast-table-scroll::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full hover:bg-slate-400;
+}
+
+.calendar-month-input {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.calendar-month-input::-webkit-calendar-picker-indicator {
+  display: none;
+}
+
+.calendar-month-input::-moz-calendar-picker-indicator {
+  display: none;
+}
+
+.calendar-month-input::-webkit-inner-spin-button,
+.calendar-month-input::-webkit-clear-button {
+  display: none;
+}
+
+/* REG pane: independent vertical + horizontal scroll */
+.forecast-reg-pane {
+  scroll-behavior: smooth;
+  overflow-x: auto;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.forecast-reg-pane::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.forecast-reg-pane::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full hover:bg-slate-400;
+}
+
+.forecast-month-pane {
+  scroll-behavior: smooth;
+  overflow-x: auto;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+#forecast-table-split-container {
+  contain: layout style;
+  width: 100%;
+}
+
+#forecast-table-split-container > *:last-child {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+/* Data Table Refinements */
+.data-table-header {
+  @apply text-[10px] font-bold text-slate-500 uppercase tracking-tight;
+}
+
+.data-value {
+  @apply font-mono tracking-tighter;
+}
+
+@layer utilities {
+  .animate-spin-slow {
+    animation: spin 8s linear infinite;
+  }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
