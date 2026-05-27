@@ -24,7 +24,7 @@ import {
   X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { format, addMonths, startOfMonth, parseISO, startOfISOWeek, endOfISOWeek } from 'date-fns';
+import { format, addMonths, startOfMonth, endOfMonth, parseISO, startOfISOWeek, endOfISOWeek } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { 
   BarChart as ReBarChart, 
@@ -124,6 +124,26 @@ export default function App() {
     }
   };
 
+  const convertMonthRangeToDateRange = (range: { start: string; end: string }) => {
+    const startDate = parseISO(`${range.start}-01`);
+    const endDate = endOfMonth(parseISO(`${range.end}-01`));
+    return {
+      start: format(startDate, 'yyyy-MM-dd'),
+      end: format(endDate, 'yyyy-MM-dd'),
+    };
+  };
+
+  const convertDateRangeToMonthRange = (range: { start: string; end: string }) => ({
+    start: format(parseISO(range.start), 'yyyy-MM'),
+    end: format(parseISO(range.end), 'yyyy-MM'),
+  });
+
+  const handleForecastModeChange = (mode: 'month' | 'day') => {
+    if (mode === forecastMode) return;
+    setForecastMode(mode);
+    setDateRange(prev => mode === 'day' ? convertMonthRangeToDateRange(prev) : convertDateRangeToMonthRange(prev));
+  };
+
   const filteredRegistrations = useMemo(
     () => filterRegistrations(registrations, columnFilters),
     [columnFilters, registrations]
@@ -131,14 +151,21 @@ export default function App() {
 
   const monthsToShow = useMemo(() => {
     const list = [];
-    let curr = startOfMonth(parseISO(dateRange.start + '-01'));
-    const end = startOfMonth(parseISO(dateRange.end + '-01'));
+    const startDate = forecastMode === 'month'
+      ? parseISO(dateRange.start + '-01')
+      : parseISO(dateRange.start);
+    const endDate = forecastMode === 'month'
+      ? parseISO(dateRange.end + '-01')
+      : parseISO(dateRange.end);
+
+    let curr = startOfMonth(startDate);
+    const end = startOfMonth(endDate);
     while (curr <= end) {
       list.push(format(curr, 'yyyy-MM'));
       curr = addMonths(curr, 1);
     }
     return list;
-  }, [dateRange]);
+  }, [dateRange, forecastMode]);
 
   const filteredCplPrices = useMemo(() => {
     const fyStart = `${selectedFy}-04`;
@@ -264,7 +291,7 @@ export default function App() {
                       <button
                         key={mode}
                         type="button"
-                        onClick={() => setForecastMode(mode)}
+                        onClick={() => handleForecastModeChange(mode)}
                         className={cn(
                           "rounded-full px-2 py-1 transition-all",
                           forecastMode === mode
@@ -282,7 +309,7 @@ export default function App() {
                 <div className="relative flex-1">
                   <input 
                     ref={startDateRef}
-                    type="month" 
+                    type={forecastMode === 'month' ? 'month' : 'date'}
                     value={dateRange.start} 
                     onChange={e => setDateRange(prev => ({ ...prev, start: e.target.value }))}
                     className="w-full pr-12 text-xs border border-slate-200 rounded p-1.5 bg-slate-50 focus:border-blue-400 outline-none transition-all appearance-none calendar-month-input" 
@@ -300,7 +327,7 @@ export default function App() {
                 <div className="relative flex-1">
                   <input 
                     ref={endDateRef}
-                    type="month" 
+                    type={forecastMode === 'month' ? 'month' : 'date'}
                     value={dateRange.end} 
                     onChange={e => setDateRange(prev => ({ ...prev, end: e.target.value }))}
                     className="w-full pr-12 text-xs border border-slate-200 rounded p-1.5 bg-slate-50 focus:border-blue-400 outline-none transition-all appearance-none calendar-month-input" 
