@@ -106,6 +106,7 @@ export default function App() {
   const [stampPeriod, setStampPeriod] = useState('No');
   const [selectedDimension, setSelectedDimension] = useState<Dimension>('Qty');
   const [selectedType, setSelectedType] = useState<ValueType>('Fcst');
+  const [forecastMode, setForecastMode] = useState<'month' | 'day'>('month');
   const [dateRange, setDateRange] = useState({ 
     start: format(new Date(), 'yyyy-MM'), 
     end: format(addMonths(new Date(), 3), 'yyyy-MM') 
@@ -252,10 +253,31 @@ export default function App() {
 
       {/* Filter Area (Header) */}
       {activeTab === 'forecast' && (
-        <header className="h-[115px] bg-white border-b border-slate-200 p-4 flex flex-col justify-center shrink-0 shadow-sm z-40">
-          <div className="grid grid-cols-6 gap-6 max-w-[1400px]">
+        <header className="h-[115px] bg-white border-b border-slate-200 pt-5 pb-3 px-4 flex flex-col justify-center shrink-0 shadow-sm z-40">
+          <div className="grid grid-cols-6 gap-6 max-w-[1400px] items-center">
             <div className="col-span-2">
-              <FilterGroup label="Date Range">
+              <FilterGroup
+                label="Date Range"
+                action={
+                  <div className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 p-1 text-[10px] font-bold uppercase">
+                    {(['month', 'day'] as const).map(mode => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setForecastMode(mode)}
+                        className={cn(
+                          "rounded-full px-2 py-1 transition-all",
+                          forecastMode === mode
+                            ? "bg-white text-blue-600 shadow-sm"
+                            : "text-slate-500 hover:text-slate-700"
+                        )}
+                      >
+                        {mode === 'month' ? 'Month' : 'Day'}
+                      </button>
+                    ))}
+                  </div>
+                }
+              >
                 <div className="flex items-center gap-2">
                 <div className="relative flex-1">
                   <input 
@@ -478,7 +500,7 @@ export default function App() {
                   </div>
                 </FilterGroup>
 
-            <div className="flex items-end gap-2 text-blue-600">
+            <div className="flex items-center justify-end gap-2 text-blue-600">
               {hasActiveColumnFilters(columnFilters) && (
                 <button 
                   onClick={() => setColumnFilters({})}
@@ -487,13 +509,6 @@ export default function App() {
                   Clear Filters
                 </button>
               )}
-              <button 
-                onClick={exportToExcel}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10px] font-bold py-2 px-3 rounded-lg shadow-sm flex-1 transition-all active:scale-95 flex items-center justify-center gap-1 uppercase tracking-wider"
-              >
-                <Download size={12} />
-                Export
-              </button>
             </div>
           </div>
         </header>
@@ -647,6 +662,7 @@ export default function App() {
                   selectedDimension={selectedDimension}
                   selectedType={selectedType}
                   onForecastChange={handleForecastChange}
+                  onExport={exportToExcel}
                 />
 
                 {/* Bottom Status Bar */}
@@ -1422,10 +1438,13 @@ function SideNavItem({ active, label, onClick, disabled, icon }: { active?: bool
   );
 }
 
-function FilterGroup({ label, children }: { label: string; children: React.ReactNode }) {
+function FilterGroup({ label, action, children }: { label: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-0.5">{label}</span>
+      <div className="flex items-center gap-2">
+        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-0.5">{label}</span>
+        {action ? <div className="ml-auto">{action}</div> : null}
+      </div>
       {children}
     </div>
   );

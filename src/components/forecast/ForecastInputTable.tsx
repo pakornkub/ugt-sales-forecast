@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Columns3 } from 'lucide-react';
+import { Columns3, Download } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type {
   ColumnFilterValue,
@@ -36,6 +36,7 @@ export interface ForecastInputTableProps {
   selectedDimension: Dimension;
   selectedType: ValueType;
   onForecastChange: (regId: string, month: string, value: number) => void;
+  onExport: () => void;
 }
 
 export function ForecastInputTable({
@@ -50,6 +51,7 @@ export function ForecastInputTable({
   selectedDimension,
   selectedType,
   onForecastChange,
+  onExport,
 }: ForecastInputTableProps) {
   const {
     columnOrder,
@@ -122,19 +124,29 @@ export function ForecastInputTable({
         <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest truncate">
           Business columns ↔ · Months ↔ · drag divider to resize
         </p>
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          className={cn(
-            'flex items-center gap-1.5 text-[10px] font-bold uppercase px-3 py-1.5 rounded-lg border transition-all duration-200',
-            settingsOpen
-              ? 'bg-blue-50 border-blue-300 text-blue-700'
-              : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
-          )}
-        >
-          <Columns3 size={12} />
-          Column Settings
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className={cn(
+              'flex items-center gap-1.5 text-[10px] font-bold uppercase px-3 py-1.5 rounded-lg border transition-all duration-200',
+              settingsOpen
+                ? 'bg-blue-50 border-blue-300 text-blue-700'
+                : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+            )}
+          >
+            <Columns3 size={12} />
+            Column Settings
+          </button>
+          <button
+            type="button"
+            onClick={onExport}
+            className="flex items-center gap-1.5 text-[10px] font-bold uppercase px-3 py-1.5 rounded-lg border bg-white border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50 transition-all duration-200"
+          >
+            <Download size={12} />
+            Export
+          </button>
+        </div>
       </div>
 
       <ColumnReorderPanel
