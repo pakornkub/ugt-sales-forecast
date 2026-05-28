@@ -12,7 +12,8 @@ export function getForecastCellValue(
   const item = forecastData.find(
     f => f.registrationId === reg.id && f.month === month && f.version === selectedVersion
   );
-  const cpl = cplPrices.find(c => c.month === month)?.price ?? 0;
+  const monthKey = month.length === 10 ? month.slice(0, 7) : month;
+  const cpl = cplPrices.find(c => c.month === monthKey)?.price ?? 0;
   const priceFcst = cpl + reg.spread;
   const qtyAct = item?.qtyAct ?? 200;
   const priceAct = item?.priceAct ?? 1500;

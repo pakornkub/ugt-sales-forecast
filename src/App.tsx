@@ -24,7 +24,7 @@ import {
   X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { format, addMonths, startOfMonth, endOfMonth, parseISO, startOfISOWeek, endOfISOWeek } from 'date-fns';
+import { format, addMonths, addDays, startOfMonth, endOfMonth, parseISO, startOfISOWeek, endOfISOWeek } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { 
   BarChart as ReBarChart, 
@@ -111,8 +111,10 @@ export default function App() {
     start: format(new Date(), 'yyyy-MM'), 
     end: format(addMonths(new Date(), 3), 'yyyy-MM') 
   });
-  const startDateRef = useRef<HTMLInputElement | null>(null);
-  const endDateRef = useRef<HTMLInputElement | null>(null);
+  const startVisibleRef = useRef<HTMLInputElement | null>(null);
+  const endVisibleRef = useRef<HTMLInputElement | null>(null);
+  const startDatePickerRef = useRef<HTMLInputElement | null>(null);
+  const endDatePickerRef = useRef<HTMLInputElement | null>(null);
 
   const openDatePicker = (input: HTMLInputElement | null) => {
     if (!input) return;
@@ -122,6 +124,29 @@ export default function App() {
       input.focus();
       input.click();
     }
+  };
+
+  const formatDayModeValue = (value: string) => {
+    if (!value) return '';
+    const [year, month, day] = value.split('-');
+    return year && month && day ? `${day}/${month}/${year}` : value;
+  };
+
+  const parseDayModeValue = (value: string) => {
+    const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!match) return null;
+    const [, day, month, year] = match;
+    const dayNum = Number(day);
+    const monthNum = Number(month);
+    const date = new Date(`${year}-${monthNum.toString().padStart(2, '0')}-${dayNum.toString().padStart(2, '0')}`);
+    if (
+      date.getFullYear() !== Number(year) ||
+      date.getMonth() + 1 !== monthNum ||
+      date.getDate() !== dayNum
+    ) {
+      return null;
+    }
+    return `${year}-${monthNum.toString().padStart(2, '0')}-${dayNum.toString().padStart(2, '0')}`;
   };
 
   const convertMonthRangeToDateRange = (range: { start: string; end: string }) => {
@@ -150,19 +175,23 @@ export default function App() {
   );
 
   const monthsToShow = useMemo(() => {
-    const list = [];
-    const startDate = forecastMode === 'month'
-      ? parseISO(dateRange.start + '-01')
-      : parseISO(dateRange.start);
-    const endDate = forecastMode === 'month'
-      ? parseISO(dateRange.end + '-01')
-      : parseISO(dateRange.end);
-
-    let curr = startOfMonth(startDate);
-    const end = startOfMonth(endDate);
-    while (curr <= end) {
-      list.push(format(curr, 'yyyy-MM'));
-      curr = addMonths(curr, 1);
+    const list: string[] = [];
+    if (forecastMode === 'month') {
+      const startDate = parseISO(dateRange.start + '-01');
+      const endDate = parseISO(dateRange.end + '-01');
+      let curr = startOfMonth(startDate);
+      const end = startOfMonth(endDate);
+      while (curr <= end) {
+        list.push(format(curr, 'yyyy-MM'));
+        curr = addMonths(curr, 1);
+      }
+    } else {
+      let curr = parseISO(dateRange.start);
+      const end = parseISO(dateRange.end);
+      while (curr <= end) {
+        list.push(format(curr, 'yyyy-MM-dd'));
+        curr = addDays(curr, 1);
+      }
     }
     return list;
   }, [dateRange, forecastMode]);
@@ -203,8 +232,9 @@ export default function App() {
     const data = registrations.map(reg => {
       const row: any = { ...reg };
       monthsToShow.forEach(m => {
+        const lookupKey = m.length === 10 ? m.slice(0, 7) : m;
         const item = forecastData.find(f => f.registrationId === reg.id && f.month === m && f.version === selectedVersion);
-        const cpl = cplPrices.find(c => c.month === m)?.price || 0;
+        const cpl = cplPrices.find(c => c.month === lookupKey)?.price || 0;
         const priceFcst = cpl + reg.spread;
         const qtyAct = item?.qtyAct ?? 200;
         const priceAct = item?.priceAct ?? 1500;
@@ -308,15 +338,32 @@ export default function App() {
                 <div className="flex items-center gap-2">
                 <div className="relative flex-1">
                   <input 
-                    ref={startDateRef}
-                    type={forecastMode === 'month' ? 'month' : 'date'}
-                    value={dateRange.start} 
-                    onChange={e => setDateRange(prev => ({ ...prev, start: e.target.value }))}
+                    ref={startVisibleRef}
+                    type={forecastMode === 'month' ? 'month' : 'text'}
+                    value={forecastMode === 'month' ? dateRange.start : formatDayModeValue(dateRange.start)} 
+                    onChange={e => {
+                      if (forecastMode === 'month') {
+                        setDateRange(prev => ({ ...prev, start: e.target.value }));
+                      } else {
+                        const parsed = parseDayModeValue(e.target.value);
+                        if (parsed !== null) {
+                          setDateRange(prev => ({ ...prev, start: parsed }));
+                        }
+                      }
+                    }}
                     className="w-full pr-12 text-xs border border-slate-200 rounded p-1.5 bg-slate-50 focus:border-blue-400 outline-none transition-all appearance-none calendar-month-input" 
+                  />
+                  <input
+                    ref={startDatePickerRef}
+                    type="date"
+                    value={forecastMode === 'day' ? dateRange.start : ''}
+                    onChange={e => setDateRange(prev => ({ ...prev, start: e.target.value }))}
+                    className="absolute left-0 top-0 w-0 h-0 opacity-0 pointer-events-none"
+                    aria-hidden="true"
                   />
                   <button
                     type="button"
-                    onClick={() => openDatePicker(startDateRef.current)}
+                    onClick={() => openDatePicker(forecastMode === 'month' ? startVisibleRef.current : startDatePickerRef.current)}
                     className="absolute inset-y-0 right-1.5 flex items-center justify-center text-slate-500 hover:text-blue-600 transition-colors"
                     aria-label="Open start month picker"
                   >
@@ -326,15 +373,32 @@ export default function App() {
                 <span className="text-slate-300 text-[10px]">TO</span>
                 <div className="relative flex-1">
                   <input 
-                    ref={endDateRef}
-                    type={forecastMode === 'month' ? 'month' : 'date'}
-                    value={dateRange.end} 
-                    onChange={e => setDateRange(prev => ({ ...prev, end: e.target.value }))}
+                    ref={endVisibleRef}
+                    type={forecastMode === 'month' ? 'month' : 'text'}
+                    value={forecastMode === 'month' ? dateRange.end : formatDayModeValue(dateRange.end)} 
+                    onChange={e => {
+                      if (forecastMode === 'month') {
+                        setDateRange(prev => ({ ...prev, end: e.target.value }));
+                      } else {
+                        const parsed = parseDayModeValue(e.target.value);
+                        if (parsed !== null) {
+                          setDateRange(prev => ({ ...prev, end: parsed }));
+                        }
+                      }
+                    }}
                     className="w-full pr-12 text-xs border border-slate-200 rounded p-1.5 bg-slate-50 focus:border-blue-400 outline-none transition-all appearance-none calendar-month-input" 
+                  />
+                  <input
+                    ref={endDatePickerRef}
+                    type="date"
+                    value={forecastMode === 'day' ? dateRange.end : ''}
+                    onChange={e => setDateRange(prev => ({ ...prev, end: e.target.value }))}
+                    className="absolute left-0 top-0 w-0 h-0 opacity-0 pointer-events-none"
+                    aria-hidden="true"
                   />
                   <button
                     type="button"
-                    onClick={() => openDatePicker(endDateRef.current)}
+                    onClick={() => openDatePicker(forecastMode === 'month' ? endVisibleRef.current : endDatePickerRef.current)}
                     className="absolute inset-y-0 right-1.5 flex items-center justify-center text-slate-500 hover:text-blue-600 transition-colors"
                     aria-label="Open end month picker"
                   >

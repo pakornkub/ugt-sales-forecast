@@ -93,7 +93,7 @@ export function ScrollableMonthGrid({
                         'justify-center text-[10px] text-blue-800 uppercase font-black'
                       )}
                     >
-                      {format(parseISO(`${m}-01`), "MMM''yy")}
+                      {m.length === 10 ? m : format(parseISO(`${m}-01`), "MMM''yy")}
                     </div>
                   </th>
                 ))}
