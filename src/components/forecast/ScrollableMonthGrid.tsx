@@ -29,7 +29,7 @@ interface ScrollableMonthGridProps {
   selectedDimension: Dimension;
   selectedType: ValueType;
   onForecastChange: (regId: string, month: string, value: number) => void;
-  forecastMode: 'month' | 'day';
+  forecastMode: 'month' | 'week' | 'day';
 }
 
 export function ScrollableMonthGrid({

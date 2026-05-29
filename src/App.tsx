@@ -107,7 +107,7 @@ export default function App() {
   const [stampPeriod, setStampPeriod] = useState('No');
   const [selectedDimension, setSelectedDimension] = useState<Dimension>('Qty');
   const [selectedType, setSelectedType] = useState<ValueType>('Fcst');
-  const [forecastMode, setForecastMode] = useState<'month' | 'day'>('month');
+  const [forecastMode, setForecastMode] = useState<'month' | 'week' | 'day'>('month');
   const [dateRange, setDateRange] = useState({ 
     start: format(new Date(), 'yyyy-MM'), 
     end: format(addMonths(new Date(), 3), 'yyyy-MM') 
@@ -164,10 +164,19 @@ export default function App() {
     end: format(parseISO(range.end), 'yyyy-MM'),
   });
 
-  const handleForecastModeChange = (mode: 'month' | 'day') => {
+  const handleForecastModeChange = (mode: 'month' | 'week' | 'day') => {
     if (mode === forecastMode) return;
     setForecastMode(mode);
-    setDateRange(prev => mode === 'day' ? convertMonthRangeToDateRange(prev) : convertDateRangeToMonthRange(prev));
+    // Only convert if switching TO/FROM month mode
+    // Month uses 'yyyy-MM' format, Week/Day use 'yyyy-MM-dd' format
+    if (mode === 'month' && forecastMode !== 'month') {
+      // Converting TO month mode from any non-month mode
+      setDateRange(prev => convertDateRangeToMonthRange(prev));
+    } else if (mode !== 'month' && forecastMode === 'month') {
+      // Converting FROM month mode to any non-month mode
+      setDateRange(prev => convertMonthRangeToDateRange(prev));
+    }
+    // If both are non-month modes (week/day to day/week), keep dateRange as-is
   };
 
   const filteredRegistrations = useMemo(
@@ -186,7 +195,7 @@ export default function App() {
         list.push(format(curr, 'yyyy-MM'));
         curr = addMonths(curr, 1);
       }
-    } else {
+    } else if (forecastMode === 'week' || forecastMode === 'day') {
       let curr = parseISO(dateRange.start);
       const end = parseISO(dateRange.end);
       while (curr <= end) {
@@ -312,7 +321,7 @@ export default function App() {
                 label="Date Range"
                 action={
                   <div className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 p-1 text-[10px] font-bold uppercase">
-                    {(['month', 'day'] as const).map(mode => (
+                    {(['month', 'week', 'day'] as const).map(mode => (
                       <button
                         key={mode}
                         type="button"
@@ -324,7 +333,7 @@ export default function App() {
                             : "text-slate-500 hover:text-slate-700"
                         )}
                       >
-                        {mode === 'month' ? 'Month' : 'Day'}
+                        {mode === 'month' ? 'Month' : mode === 'week' ? 'Week' : 'Day'}
                       </button>
                     ))}
                   </div>
@@ -339,7 +348,7 @@ export default function App() {
                     onChange={e => {
                       if (forecastMode === 'month') {
                         setDateRange(prev => ({ ...prev, start: e.target.value }));
-                      } else {
+                      } else if (forecastMode === 'week' || forecastMode === 'day') {
                         const parsed = parseDayModeValue(e.target.value);
                         if (parsed !== null) {
                           setDateRange(prev => ({ ...prev, start: parsed }));
@@ -351,7 +360,7 @@ export default function App() {
                   <input
                     ref={startDatePickerRef}
                     type="date"
-                    value={forecastMode === 'day' ? dateRange.start : ''}
+                    value={forecastMode !== 'month' ? dateRange.start : ''}
                     onChange={e => setDateRange(prev => ({ ...prev, start: e.target.value }))}
                     className="absolute left-0 top-0 w-0 h-0 opacity-0 pointer-events-none"
                     aria-hidden="true"
@@ -374,7 +383,7 @@ export default function App() {
                     onChange={e => {
                       if (forecastMode === 'month') {
                         setDateRange(prev => ({ ...prev, end: e.target.value }));
-                      } else {
+                      } else if (forecastMode === 'week' || forecastMode === 'day') {
                         const parsed = parseDayModeValue(e.target.value);
                         if (parsed !== null) {
                           setDateRange(prev => ({ ...prev, end: parsed }));
@@ -386,7 +395,7 @@ export default function App() {
                   <input
                     ref={endDatePickerRef}
                     type="date"
-                    value={forecastMode === 'day' ? dateRange.end : ''}
+                    value={forecastMode !== 'month' ? dateRange.end : ''}
                     onChange={e => setDateRange(prev => ({ ...prev, end: e.target.value }))}
                     className="absolute left-0 top-0 w-0 h-0 opacity-0 pointer-events-none"
                     aria-hidden="true"

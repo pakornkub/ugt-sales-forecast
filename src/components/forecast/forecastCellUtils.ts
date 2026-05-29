@@ -11,7 +11,7 @@ export function getForecastCellValue(
   selectedType: ValueType,
   forecastData: ForecastValue[],
   cplPrices: CPLPrice[],
-  forecastMode: 'month' | 'day'
+  forecastMode: 'month' | 'week' | 'day'
 ): { value: number; isEditable: boolean } {
   const directItem = forecastData.find(
     f => f.registrationId === reg.id && f.month === month && f.version === selectedVersion

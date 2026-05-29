@@ -37,7 +37,7 @@ export interface ForecastInputTableProps {
   selectedType: ValueType;
   onForecastChange: (regId: string, month: string, value: number) => void;
   onExport: () => void;
-  forecastMode: 'month' | 'day';
+  forecastMode: 'month' | 'week' | 'day';
 }
 
 export function ForecastInputTable({
