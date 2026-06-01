@@ -1,7 +1,12 @@
 import type { CPLPrice, Dimension, ForecastValue, Registration, ValueType } from '../../types/forecast';
 
 const isDailyKey = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
-const monthKey = (value: string) => (isDailyKey(value) ? value.slice(0, 7) : value);
+const isWeekRangeKey = (value: string) => /^\d{4}-\d{2}-\d{2}\|\d{4}-\d{2}-\d{2}$/.test(value);
+const monthKey = (value: string) => {
+  if (isDailyKey(value)) return value.slice(0, 7);
+  if (isWeekRangeKey(value)) return value.split('|')[0].slice(0, 7);
+  return value;
+};
 
 export function getForecastCellValue(
   reg: Registration,
@@ -14,12 +19,19 @@ export function getForecastCellValue(
   forecastMode: 'month' | 'week' | 'day'
 ): { value: number; isEditable: boolean } {
   const directItem = forecastData.find(
-    f => f.registrationId === reg.id && f.month === month && f.version === selectedVersion
+    f => f.registrationId === reg.id && f.version === selectedVersion && f.month === month
   );
 
-  let qtyAct = directItem?.qtyAct;
-  let qtyFcst = directItem?.qtyFcst;
-  const priceAct = directItem?.priceAct ?? 1500;
+  const fallbackItem = isWeekRangeKey(month)
+    ? forecastData.find(
+        f => f.registrationId === reg.id && f.version === selectedVersion && f.month === monthKey(month)
+      )
+    : undefined;
+
+  const activeItem = directItem ?? fallbackItem;
+  let qtyAct = activeItem?.qtyAct;
+  let qtyFcst = activeItem?.qtyFcst;
+  const priceAct = activeItem?.priceAct ?? 1500;
   let hasAggregatedDailyData = false;
 
   if (forecastMode === 'month') {

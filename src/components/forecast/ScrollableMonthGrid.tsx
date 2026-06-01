@@ -8,6 +8,13 @@ import type {
   Registration,
   ValueType,
 } from '../../types/forecast';
+
+const isWeekRangeKey = (value: string) => /^\d{4}-\d{2}-\d{2}\|\d{4}-\d{2}-\d{2}$/.test(value);
+
+const formatWeekRangeLabel = (weekKey: string) => {
+  const [start, end] = weekKey.split('|');
+  return `${format(parseISO(start), 'dd MMM')} - ${format(parseISO(end), 'dd MMM')}`;
+};
 import { getForecastCellValue } from './forecastCellUtils';
 import {
   forecastBodyCellClass,
@@ -95,7 +102,11 @@ export function ScrollableMonthGrid({
                         'justify-center text-[10px] text-blue-800 uppercase font-black'
                       )}
                     >
-                      {m.length === 10 ? m : format(parseISO(`${m}-01`), "MMM''yy")}
+                      {isWeekRangeKey(m)
+                        ? formatWeekRangeLabel(m)
+                        : m.length === 10
+                          ? m
+                          : format(parseISO(`${m}-01`), "MMM''yy")}
                     </div>
                   </th>
                 ))}

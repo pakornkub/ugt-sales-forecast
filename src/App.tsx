@@ -195,7 +195,15 @@ export default function App() {
         list.push(format(curr, 'yyyy-MM'));
         curr = addMonths(curr, 1);
       }
-    } else if (forecastMode === 'week' || forecastMode === 'day') {
+    } else if (forecastMode === 'week') {
+      let curr = parseISO(dateRange.start);
+      const end = parseISO(dateRange.end);
+      while (curr <= end) {
+        const weekEnd = end < addDays(curr, 6) ? end : addDays(curr, 6);
+        list.push(`${format(curr, 'yyyy-MM-dd')}|${format(weekEnd, 'yyyy-MM-dd')}`);
+        curr = addDays(weekEnd, 1);
+      }
+    } else if (forecastMode === 'day') {
       let curr = parseISO(dateRange.start);
       const end = parseISO(dateRange.end);
       while (curr <= end) {
