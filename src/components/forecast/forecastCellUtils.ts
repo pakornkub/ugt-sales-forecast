@@ -48,6 +48,22 @@ export function getForecastCellValue(
       qtyFcst = dailyItems.reduce((sum, item) => sum + item.qtyFcst, 0);
       hasAggregatedDailyData = true;
     }
+  } else if (forecastMode === 'week' && isWeekRangeKey(month)) {
+    const [rangeStart, rangeEnd] = month.split('|');
+    const dailyItems = forecastData.filter(
+      f =>
+        f.registrationId === reg.id &&
+        f.version === selectedVersion &&
+        isDailyKey(f.month) &&
+        f.month >= rangeStart &&
+        f.month <= rangeEnd
+    );
+
+    if (dailyItems.length > 0) {
+      qtyAct = dailyItems.reduce((sum, item) => sum + item.qtyAct, 0);
+      qtyFcst = dailyItems.reduce((sum, item) => sum + item.qtyFcst, 0);
+      hasAggregatedDailyData = true;
+    }
   }
 
   const cpl = cplPrices.find(c => c.month === monthKey(month))?.price ?? 0;
