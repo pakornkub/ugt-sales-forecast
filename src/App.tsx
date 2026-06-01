@@ -329,7 +329,7 @@ export default function App() {
                 label="Date Range"
                 action={
                   <div className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 p-1 text-[10px] font-bold uppercase">
-                    {(['month', 'week', 'day'] as const).map(mode => (
+                    {(['month', 'week'] as const).map(mode => (
                       <button
                         key={mode}
                         type="button"
