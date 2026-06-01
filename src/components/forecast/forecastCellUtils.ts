@@ -79,7 +79,8 @@ export function getForecastCellValue(
     if (selectedType === 'Act') value = actValue;
     else if (selectedType === 'Fcst') {
       value = fcstValue;
-      isEditable = !hasAggregatedDailyData;
+      // Week mode is the lowest editable level: allow editing weekly FCST
+      isEditable = forecastMode === 'week' ? true : !hasAggregatedDailyData;
     } else value = actValue - fcstValue;
   } else if (selectedDimension === 'Price') {
     if (selectedType === 'Act') value = priceAct;
