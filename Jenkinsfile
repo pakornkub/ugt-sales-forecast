@@ -88,8 +88,8 @@ pipeline {
         script {
           def branchName = env.BRANCH_NAME ?: env.GIT_BRANCH?.tokenize('/')?.last() ?: 'local'
           def safeBranch = branchName.replaceAll('[^A-Za-z0-9_.-]', '-')
-          def projectKey = branchName == 'main' ? 'ugt-sales-forecast' : "ugt-sales-forecast-${safeBranch}"
-          def projectName = branchName == 'main' ? 'UGT Sales Forecast' : "UGT Sales Forecast (${branchName})"
+          def projectKey = branchName == 'master' ? 'ugt-sales-forecast' : "ugt-sales-forecast-${safeBranch}"
+          def projectName = branchName == 'master' ? 'UGT Sales Forecast' : "UGT Sales Forecast (${branchName})"
           def scannerHome = tool('SonarQube-Scanner')
           withSonarQubeEnv('SonarQube') {
             withEnv([
@@ -121,7 +121,7 @@ pipeline {
       when {
         expression {
           def branchName = env.BRANCH_NAME ?: env.GIT_BRANCH?.tokenize('/')?.last()
-          branchName == 'main'
+          branchName == 'master'
         }
       }
       steps {
@@ -142,7 +142,7 @@ pipeline {
       when {
         expression {
           def branchName = env.BRANCH_NAME ?: env.GIT_BRANCH?.tokenize('/')?.last()
-          branchName == 'main'
+          branchName == 'master'
         }
       }
       steps {
