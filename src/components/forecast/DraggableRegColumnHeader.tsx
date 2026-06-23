@@ -2,6 +2,7 @@ import React from 'react';
 import { GripVertical } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { ColumnFilterValue, Registration, RegColumnKey } from '../../types/forecast';
+import type { FilterOptionsPage } from '../../lib/api';
 import { FilterDropdown } from './FilterDropdown';
 import { normalizeColumnFilter } from './forecastFilterUtils';
 import { forecastHeaderCellClass } from './forecastTableMetrics';
@@ -19,6 +20,10 @@ export function DraggableRegColumnHeader({
   onDragOver,
   onDragLeave,
   onDrop,
+  staticOptions,
+  overrideValue,
+  overrideOnChange,
+  loadFilterOptions,
 }: {
   column: OrderedRegColumn;
   allRegistrations: Registration[];
@@ -31,8 +36,18 @@ export function DraggableRegColumnHeader({
   onDragOver: (e: React.DragEvent, key: RegColumnKey) => void;
   onDragLeave: () => void;
   onDrop: (key: RegColumnKey) => void;
+  staticOptions?: string[];
+  overrideValue?: ColumnFilterValue;
+  overrideOnChange?: (v: ColumnFilterValue) => void;
+  loadFilterOptions?: (
+    columnKey: string,
+    search: string,
+    cursor?: string | null
+  ) => Promise<FilterOptionsPage>;
 }) {
   const { key, label, width } = column;
+  const filterValue = overrideValue ?? normalizeColumnFilter(columnFilters[key]);
+  const handleFilterChange = overrideOnChange ?? ((v: ColumnFilterValue) => onColumnFilterChange(key, v));
 
   return (
     <th
@@ -66,8 +81,10 @@ export function DraggableRegColumnHeader({
             columnKey={key}
             label={label}
             registrations={allRegistrations}
-            value={normalizeColumnFilter(columnFilters[key])}
-            onChange={v => onColumnFilterChange(key, v)}
+            staticOptions={staticOptions}
+            value={filterValue}
+            onChange={handleFilterChange}
+            loadOptions={staticOptions ? undefined : loadFilterOptions}
           />
         </div>
       </div>

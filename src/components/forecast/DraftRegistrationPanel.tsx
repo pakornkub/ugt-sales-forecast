@@ -1,0 +1,970 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown, FilePlus2, Pencil, Search, Trash2, X } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
+import { cn } from '../../lib/utils';
+import {
+  PRICE_FORMULA_OPTIONS,
+  type PriceFormula,
+  type Registration,
+  type RegColumnKey,
+} from '../../types/forecast';
+import { ALL_REG_COLUMNS } from './regTableColumns';
+
+const REQUIRED_FIELDS: Array<{ key: RegColumnKey; label: string }> = [
+  { key: 'materialDescription', label: 'Material Description' },
+  { key: 'materialCode', label: 'Material Code' },
+  { key: 'plantCode', label: 'Plant Code' },
+  { key: 'ownerName', label: 'Owner Name' },
+];
+
+const NUMERIC_FIELDS = new Set<RegColumnKey>([
+  'commission',
+  'commissionIndirect',
+  'commissionFinancialDiscount',
+]);
+
+const REQUIRED_KEYS = new Set<RegColumnKey>(REQUIRED_FIELDS.map(field => field.key));
+const KEY_FIELDS = new Set<RegColumnKey>([
+  'registrationTopic',
+  'soldToCode',
+  'shipToCode',
+  'endUserCode',
+  'plantCode',
+  'materialCode',
+  'onOffSpec',
+]);
+const EXCLUDED_OPTIONAL_FIELDS = new Set<RegColumnKey>([
+  ...REQUIRED_KEYS,
+  'carryInETD',
+  'carryOutETD',
+  'carryInLoading',
+  'carryOutLoading',
+  'createdOn',
+  'column1',
+]);
+
+function emptyRegistration(id = ''): Registration {
+  return {
+    id,
+    isManaged: true,
+    sourceStatus: 'registration_only',
+    keyForNoCRM: '',
+    ownerName: '',
+    registrationTopic: '',
+    onOffSpec: '',
+    plantCode: '',
+    countryName: '',
+    materialDescription: '',
+    materialCode: '',
+    shipTo_name: '',
+    soldTo_name: '',
+    end_user: '',
+    soldToCode: '',
+    shipToCode: '',
+    group: '',
+    materialNameOnCoa: '',
+    additionalRequirement: '',
+    pic: '',
+    commission: '',
+    productDescription: '',
+    classified: '',
+    commissionIndirect: '',
+    commissionFinancialDiscount: '',
+    newCoaName: '',
+    newTier1: '',
+    newOem: '',
+    packing: '',
+    agreedSpecType: '',
+    wasteScrap: '',
+    forResaleNotApprove: '',
+    imdsDate: '',
+    model: '',
+    createdOn: '',
+    approve: '',
+    partName: '',
+    coaName: '',
+    process: '',
+    application: '',
+    subApp: '',
+    zoneName: '',
+    plantName: '',
+    countryCode: '',
+    endUserCode: '',
+    endUserExportControl: '',
+    endUserName: '',
+    productName: '',
+    column1: '',
+    carryInETD: 0,
+    carryOutETD: 0,
+    carryInLoading: 0,
+    carryOutLoading: 0,
+    priceFormula: 'CPL',
+    spread: 0,
+  };
+}
+
+export function DraftRegistrationPanel({
+  open,
+  onClose,
+  onCreate,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onCreate: (registration: Registration) => Promise<Registration>;
+}) {
+  const [form, setForm] = useState<Registration>(() => emptyRegistration());
+  const [selectedOptionalFields, setSelectedOptionalFields] = useState<RegColumnKey[]>([]);
+  const [fieldSearch, setFieldSearch] = useState('');
+  const [showOptionalFields, setShowOptionalFields] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const optionalFieldsRef = useRef<HTMLDivElement>(null);
+
+  const optionalFields = useMemo(
+    () => ALL_REG_COLUMNS.filter(field => !EXCLUDED_OPTIONAL_FIELDS.has(field.key)),
+    []
+  );
+  const filteredOptionalFields = useMemo(() => {
+    const query = fieldSearch.trim().toLowerCase();
+    if (!query) return optionalFields;
+    return optionalFields.filter(field =>
+      field.label.toLowerCase().includes(query) ||
+      field.key.toLowerCase().includes(query)
+    );
+  }, [fieldSearch, optionalFields]);
+
+  const isValid = REQUIRED_FIELDS.every(field =>
+    String(form[field.key as keyof Registration] ?? '').trim()
+  );
+
+  useEffect(() => {
+    if (!open) {
+      setForm(emptyRegistration());
+      setSelectedOptionalFields([]);
+      setFieldSearch('');
+      setShowOptionalFields(false);
+      setSubmitted(false);
+      setSaving(false);
+      setError('');
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!optionalFieldsRef.current?.contains(event.target as Node)) {
+        setShowOptionalFields(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (showOptionalFields) {
+        setShowOptionalFields(false);
+        return;
+      }
+      onClose();
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose, open, showOptionalFields]);
+
+  const setField = (key: RegColumnKey, value: string) => {
+    setForm(previous => ({
+      ...previous,
+      [key]: NUMERIC_FIELDS.has(key) ? Number(value) || 0 : value,
+    }));
+  };
+
+  const resetForm = () => {
+    setForm(emptyRegistration());
+    setSelectedOptionalFields([]);
+    setFieldSearch('');
+    setShowOptionalFields(false);
+    setSubmitted(false);
+    setError('');
+  };
+
+  const clearOptionalField = (key: RegColumnKey) => {
+    setSelectedOptionalFields(previous => previous.filter(fieldKey => fieldKey !== key));
+    setField(
+      key,
+      NUMERIC_FIELDS.has(key)
+        ? '0'
+        : key === 'priceFormula'
+          ? 'CPL'
+          : ''
+    );
+  };
+
+  const toggleOptionalField = (key: RegColumnKey) => {
+    const isSelected = selectedOptionalFields.includes(key);
+    if (isSelected) {
+      clearOptionalField(key);
+      return;
+    }
+    setSelectedOptionalFields(previous => [...previous, key]);
+  };
+
+  const submit = async () => {
+    setSubmitted(true);
+    if (!isValid) return;
+
+    const registration = {
+      ...form,
+      id: form.id,
+      isManaged: true,
+      sourceStatus: 'registration_only' as const,
+      priceFormula: form.priceFormula || 'CPL',
+    };
+    setSaving(true);
+    setError('');
+    try {
+      await onCreate(registration);
+      resetForm();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Unable to save registration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const renderInput = (
+    key: RegColumnKey,
+    label: string,
+    required = false,
+    removable = false
+  ) => {
+    const value = form[key as keyof Registration];
+    const hasError = submitted && required && !String(value ?? '').trim();
+    const fieldLabel = (
+      <span className="mb-1 flex min-w-0 items-center justify-between gap-2 text-[9px] font-black uppercase text-slate-500">
+        <span className="truncate">
+          {label}{required && <span className="ml-1 text-red-500">*</span>}
+        </span>
+        {removable && (
+          <button
+            type="button"
+            onClick={() => clearOptionalField(key)}
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-500"
+            aria-label={`Remove ${label}`}
+            title={`Remove ${label}`}
+          >
+            <X size={12} />
+          </button>
+        )}
+      </span>
+    );
+
+    if (key === 'priceFormula') {
+      return (
+        <label key={key} className="block">
+          {fieldLabel}
+          <select
+            value={form.priceFormula || 'CPL'}
+            onChange={event => setField(key, event.target.value)}
+            className="sf-select h-9 w-full rounded-md border px-3 text-xs outline-none"
+          >
+            {PRICE_FORMULA_OPTIONS.map(option => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        </label>
+      );
+    }
+
+    if (key === 'onOffSpec') {
+      return (
+        <label key={key} className="block">
+          {fieldLabel}
+          <select
+            value={form.onOffSpec}
+            onChange={event => setField(key, event.target.value)}
+            className={cn(
+              'sf-select h-9 w-full rounded-md border px-3 text-xs outline-none',
+              hasError ? 'border-red-300' : 'border-slate-200'
+            )}
+          >
+            <option value="">Select On / Off</option>
+            <option value="On">On</option>
+            <option value="Off">Off</option>
+          </select>
+        </label>
+      );
+    }
+
+    return (
+      <label key={key} className="block">
+        {fieldLabel}
+        <input
+          type={NUMERIC_FIELDS.has(key) ? 'number' : 'text'}
+          value={String(value ?? '')}
+          onChange={event => setField(key, event.target.value)}
+          className={cn(
+            'h-9 w-full rounded-md border bg-white px-3 text-xs text-slate-700 outline-none focus:ring-2',
+            hasError
+              ? 'border-red-300 focus:border-red-400 focus:ring-red-100'
+              : 'border-slate-200 focus:border-blue-400 focus:ring-blue-100'
+          )}
+        />
+      </label>
+    );
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] bg-slate-900/35 backdrop-blur-[1px]"
+            onClick={onClose}
+          />
+          <motion.section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="draft-registration-title"
+            initial={{ opacity: 0, scale: 0.98, y: 12 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: 12 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="fixed left-1/2 top-1/2 z-[80] flex max-h-[90vh] w-[min(960px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-50 text-blue-600">
+                  <FilePlus2 size={17} />
+                </div>
+                <div>
+                  <h3 id="draft-registration-title" className="text-sm font-black uppercase tracking-widest text-slate-800">
+                    Add Registration
+                  </h3>
+                  <p className="mt-0.5 text-[10px] text-slate-400">Saved in Sales Forecast master data. CRM remains read-only.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Close Add Registration"
+              >
+                <X size={17} />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="overflow-y-auto p-5">
+                <div className="mb-4">
+                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-600">Required Information</h4>
+                  <p className="mt-1 text-[10px] text-slate-400">Complete the 4 required fields before saving.</p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {REQUIRED_FIELDS.map(field => renderInput(field.key, field.label, true))}
+                </div>
+
+                {selectedOptionalFields.length > 0 && (
+                  <div className="mt-5 border-t border-slate-100 pt-5">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-600">Optional Details</h4>
+                      <span className="rounded bg-blue-50 px-2 py-0.5 text-[9px] font-bold text-blue-700">
+                        {selectedOptionalFields.length} selected
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      {selectedOptionalFields.map(key => {
+                        const definition = ALL_REG_COLUMNS.find(field => field.key === key);
+                        return definition ? renderInput(key, definition.label, false, true) : null;
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div ref={optionalFieldsRef} className="relative mt-5 border-t border-slate-100 pt-5">
+                  <button
+                    type="button"
+                    onClick={() => setShowOptionalFields(previous => !previous)}
+                    aria-expanded={showOptionalFields}
+                    className={cn(
+                      'flex w-full items-center justify-between rounded-md border bg-white px-3 py-2.5 text-left text-[10px] font-bold uppercase text-slate-600 transition-colors',
+                      showOptionalFields
+                        ? 'border-blue-400 ring-2 ring-blue-100'
+                        : 'border-slate-200 hover:border-slate-300'
+                    )}
+                  >
+                    <span>Add Other Fields</span>
+                    <span className="flex items-center gap-2">
+                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[9px] text-blue-700">
+                        {selectedOptionalFields.length}
+                      </span>
+                      <ChevronDown
+                        size={14}
+                        className={cn('transition-transform', showOptionalFields && 'rotate-180')}
+                      />
+                    </span>
+                  </button>
+
+                  {showOptionalFields && (
+                    <div className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-md border border-slate-200 bg-white shadow-xl">
+                      <div className="relative border-b border-slate-100 p-2.5">
+                        <Search size={14} className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="search"
+                          value={fieldSearch}
+                          onChange={event => setFieldSearch(event.target.value)}
+                          placeholder="Search other fields..."
+                          className="h-9 w-full rounded-md border border-slate-200 pl-9 pr-3 text-[11px] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-[min(10rem,24vh)] overflow-y-auto p-1.5">
+                        {filteredOptionalFields.map(field => {
+                          const checked = selectedOptionalFields.includes(field.key);
+                          return (
+                            <label
+                              key={field.key}
+                              className="flex cursor-pointer items-center gap-2 rounded px-2.5 py-2 text-[10px] font-semibold text-slate-600 hover:bg-slate-50"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleOptionalField(field.key)}
+                              />
+                              <span className="truncate">{field.label}</span>
+                            </label>
+                          );
+                        })}
+                        {filteredOptionalFields.length === 0 && (
+                          <div className="px-3 py-8 text-center text-[10px] text-slate-400">
+                            No matching fields
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200 bg-white px-5 py-3">
+              {error && (
+                <p className="mr-auto self-center text-[10px] font-semibold text-red-600">{error}</p>
+              )}
+              <button
+                type="button"
+                onClick={submit}
+                disabled={saving}
+                className="flex h-9 min-w-36 items-center justify-center gap-1.5 rounded-md bg-blue-600 px-5 text-[10px] font-bold uppercase text-white shadow-sm hover:bg-blue-700 disabled:cursor-wait disabled:opacity-60"
+              >
+                <Check size={13} />
+                {saving ? 'Saving...' : 'Save Registration'}
+              </button>
+            </div>
+          </motion.section>
+        </>
+      )}
+    </AnimatePresence>
+  );
+}
+
+export function ManageRegistrationPanel({
+  open,
+  registrations,
+  onClose,
+  onUpdate,
+  onDelete,
+}: {
+  open: boolean;
+  registrations: Registration[];
+  onClose: () => void;
+  onUpdate: (registration: Registration) => Promise<Registration>;
+  onDelete: (registrationId: string) => Promise<void>;
+}) {
+  const [form, setForm] = useState<Registration | null>(null);
+  const [selectedOptionalFields, setSelectedOptionalFields] = useState<RegColumnKey[]>([]);
+  const [fieldSearch, setFieldSearch] = useState('');
+  const [listSearch, setListSearch] = useState('');
+  const [showOptionalFields, setShowOptionalFields] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const optionalFieldsRef = useRef<HTMLDivElement>(null);
+
+  const optionalFields = useMemo(
+    () => ALL_REG_COLUMNS.filter(field => !EXCLUDED_OPTIONAL_FIELDS.has(field.key)),
+    []
+  );
+  const filteredOptionalFields = useMemo(() => {
+    const query = fieldSearch.trim().toLowerCase();
+    if (!query) return optionalFields;
+    return optionalFields.filter(field =>
+      field.label.toLowerCase().includes(query) ||
+      field.key.toLowerCase().includes(query)
+    );
+  }, [fieldSearch, optionalFields]);
+  const filteredRegistrations = useMemo(() => {
+    const query = listSearch.trim().toLowerCase();
+    if (!query) return registrations;
+    return registrations.filter(registration =>
+      [
+        registration.materialDescription,
+        registration.materialCode,
+        registration.plantCode,
+        registration.ownerName,
+        registration.registrationTopic,
+      ].some(value => String(value ?? '').toLowerCase().includes(query))
+    );
+  }, [listSearch, registrations]);
+
+  useEffect(() => {
+    if (!open) {
+      setForm(null);
+      setSelectedOptionalFields([]);
+      setFieldSearch('');
+      setListSearch('');
+      setShowOptionalFields(false);
+      setSubmitted(false);
+      setSaving(false);
+      setError('');
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!optionalFieldsRef.current?.contains(event.target as Node)) {
+        setShowOptionalFields(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (showOptionalFields) {
+        setShowOptionalFields(false);
+        return;
+      }
+      onClose();
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose, open, showOptionalFields]);
+
+  const setField = (key: RegColumnKey, value: string) => {
+    setForm(previous => previous
+      ? {
+          ...previous,
+          [key]: NUMERIC_FIELDS.has(key) ? Number(value) || 0 : value,
+        }
+      : previous
+    );
+  };
+
+  const startEditing = (registration: Registration) => {
+    setForm({ ...registration });
+    setSelectedOptionalFields(
+      optionalFields
+        .filter(field => {
+          const value = registration[field.key as keyof Registration];
+          if (field.key === 'priceFormula') return String(value || 'CPL') !== 'CPL';
+          return NUMERIC_FIELDS.has(field.key)
+            ? Number(value) !== 0
+            : String(value ?? '').trim() !== '';
+        })
+        .map(field => field.key)
+    );
+    setShowOptionalFields(false);
+    setSubmitted(false);
+    setError('');
+  };
+
+  const clearOptionalField = (key: RegColumnKey) => {
+    setSelectedOptionalFields(previous => previous.filter(fieldKey => fieldKey !== key));
+    setField(
+      key,
+      NUMERIC_FIELDS.has(key)
+        ? '0'
+        : key === 'priceFormula'
+          ? 'CPL'
+          : ''
+    );
+  };
+
+  const toggleOptionalField = (key: RegColumnKey) => {
+    if (selectedOptionalFields.includes(key)) {
+      clearOptionalField(key);
+      return;
+    }
+    setSelectedOptionalFields(previous => [...previous, key]);
+  };
+
+  const submit = async () => {
+    if (!form) return;
+    setSubmitted(true);
+    const isValid = REQUIRED_FIELDS.every(field =>
+      String(form[field.key as keyof Registration] ?? '').trim()
+    );
+    if (!isValid) return;
+
+    setSaving(true);
+    setError('');
+    try {
+      const saved = await onUpdate({
+        ...form,
+        isManaged: true,
+        sourceStatus: 'registration_only',
+        priceFormula: form.priceFormula || 'CPL',
+      });
+      startEditing(saved);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Unable to update registration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const renderInput = (
+    key: RegColumnKey,
+    label: string,
+    required = false,
+    removable = false
+  ) => {
+    if (!form) return null;
+    const value = form[key as keyof Registration];
+    const locked = KEY_FIELDS.has(key);
+    const hasError = submitted && required && !String(value ?? '').trim();
+    const fieldLabel = (
+      <span className="mb-1 flex min-w-0 items-center justify-between gap-2 text-[9px] font-black uppercase text-slate-500">
+        <span className="truncate">
+          {label}{required && <span className="ml-1 text-red-500">*</span>}
+          {locked && <span className="ml-1 text-[8px] font-bold text-slate-400">(locked)</span>}
+        </span>
+        {removable && (
+          <button
+            type="button"
+            onClick={() => clearOptionalField(key)}
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-500"
+            aria-label={`Remove ${label}`}
+            title={`Remove ${label}`}
+          >
+            <X size={12} />
+          </button>
+        )}
+      </span>
+    );
+
+    if (key === 'priceFormula') {
+      return (
+        <label key={key} className="block">
+          {fieldLabel}
+          <select
+            value={form.priceFormula || 'CPL'}
+            onChange={event => setField(key, event.target.value)}
+            className="sf-select h-9 w-full rounded-md border px-3 text-xs outline-none"
+          >
+            {PRICE_FORMULA_OPTIONS.map(option => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        </label>
+      );
+    }
+
+    if (key === 'onOffSpec') {
+      return (
+        <label key={key} className="block">
+          {fieldLabel}
+          <select
+            value={form.onOffSpec}
+            onChange={event => setField(key, event.target.value)}
+            disabled={locked}
+            className={cn(
+              'sf-select h-9 w-full rounded-md border px-3 text-xs outline-none',
+              hasError ? 'border-red-300' : 'border-slate-200',
+              locked && 'cursor-not-allowed bg-slate-100 text-slate-500'
+            )}
+          >
+            <option value="">Select On / Off</option>
+            <option value="On">On</option>
+            <option value="Off">Off</option>
+            <option value="Unspecified">Unspecified</option>
+          </select>
+        </label>
+      );
+    }
+
+    return (
+      <label key={key} className="block">
+        {fieldLabel}
+        <input
+          type={NUMERIC_FIELDS.has(key) ? 'number' : 'text'}
+          value={String(value ?? '')}
+          onChange={event => setField(key, event.target.value)}
+          disabled={locked}
+          className={cn(
+            'h-9 w-full rounded-md border bg-white px-3 text-xs text-slate-700 outline-none focus:ring-2',
+            locked && 'cursor-not-allowed bg-slate-100 text-slate-500',
+            hasError
+              ? 'border-red-300 focus:border-red-400 focus:ring-red-100'
+              : 'border-slate-200 focus:border-blue-400 focus:ring-blue-100'
+          )}
+        />
+      </label>
+    );
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] bg-slate-900/35 backdrop-blur-[1px]"
+            onClick={onClose}
+          />
+          <motion.section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="manage-registration-title"
+            initial={{ opacity: 0, scale: 0.98, y: 12 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: 12 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="fixed left-1/2 top-1/2 z-[80] flex max-h-[90vh] w-[min(1040px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-md bg-indigo-50 text-indigo-600">
+                  <Pencil size={16} />
+                </div>
+                <div>
+                  <h3 id="manage-registration-title" className="text-sm font-black uppercase tracking-widest text-slate-800">
+                    Manage Registration
+                  </h3>
+                  <p className="mt-0.5 text-[10px] text-slate-400">Edit or delete registrations saved from this web app.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Close Manage Registration"
+              >
+                <X size={17} />
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[330px_minmax(0,1fr)]">
+              <aside className="flex min-h-[260px] flex-col border-b border-slate-200 bg-slate-50/70 md:min-h-0 md:border-b-0 md:border-r">
+                <div className="shrink-0 border-b border-slate-200 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-600">New Registrations</h4>
+                    <span className="rounded bg-indigo-100 px-2 py-0.5 text-[9px] font-bold text-indigo-700">{registrations.length}</span>
+                  </div>
+                  <div className="relative">
+                    <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="search"
+                      value={listSearch}
+                      onChange={event => setListSearch(event.target.value)}
+                      placeholder="Search registrations..."
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-[11px] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+                  {filteredRegistrations.length === 0 ? (
+                    <div className="flex h-full min-h-40 flex-col items-center justify-center px-5 text-center">
+                      <FilePlus2 size={24} className="mb-2 text-slate-300" />
+                      <p className="text-[10px] font-bold uppercase text-slate-400">No registrations</p>
+                      <p className="mt-1 text-[9px] leading-relaxed text-slate-400">Saved new registrations will appear here.</p>
+                    </div>
+                  ) : (
+                    filteredRegistrations.map(registration => (
+                      <button
+                        key={registration.id}
+                        type="button"
+                        onClick={() => startEditing(registration)}
+                        className={cn(
+                          'block w-full rounded-md border bg-white p-3 text-left transition-colors',
+                          form?.id === registration.id
+                            ? 'border-blue-300 ring-2 ring-blue-100'
+                            : 'border-slate-200 hover:border-slate-300'
+                        )}
+                      >
+                        <p className="truncate text-[10px] font-bold text-slate-700">{registration.materialDescription}</p>
+                        <p className="mt-1 truncate text-[9px] text-slate-500">
+                          {registration.materialCode} / {registration.plantCode}
+                        </p>
+                        <p className="mt-0.5 truncate text-[9px] text-slate-400">{registration.ownerName}</p>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </aside>
+
+              <div className="flex min-h-0 flex-col">
+                {!form ? (
+                  <div className="flex min-h-[360px] flex-1 flex-col items-center justify-center p-8 text-center">
+                    <Pencil size={28} className="mb-3 text-slate-300" />
+                    <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">Select a registration</p>
+                    <p className="mt-2 max-w-sm text-[11px] leading-relaxed text-slate-400">
+                      Choose a saved new registration on the left to edit optional fields or delete it.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="min-h-0 flex-1 overflow-y-auto p-5">
+                      <div className="mb-4 flex items-start justify-between gap-3">
+                        <div>
+                          <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-600">Registration Details</h4>
+                          <p className="mt-1 text-[10px] text-slate-400">Key fields are locked to protect forecast references.</p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={async () => {
+                            if (!form || !window.confirm('Delete this registration?')) return;
+                            setSaving(true);
+                            setError('');
+                            try {
+                              await onDelete(form.id);
+                              setForm(null);
+                              setSelectedOptionalFields([]);
+                            } catch (deleteError) {
+                              setError(deleteError instanceof Error ? deleteError.message : 'Unable to delete registration');
+                            } finally {
+                              setSaving(false);
+                            }
+                          }}
+                          className="flex h-9 items-center gap-1.5 rounded-md border border-red-100 bg-white px-3 text-[10px] font-bold uppercase text-red-500 hover:border-red-200 hover:bg-red-50 disabled:opacity-60"
+                        >
+                          <Trash2 size={13} />
+                          Delete
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        {REQUIRED_FIELDS.map(field => renderInput(field.key, field.label, true))}
+                      </div>
+
+                      {selectedOptionalFields.length > 0 && (
+                        <div className="mt-5 border-t border-slate-100 pt-5">
+                          <div className="mb-3 flex items-center justify-between">
+                            <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-600">Editable Optional Details</h4>
+                            <span className="rounded bg-blue-50 px-2 py-0.5 text-[9px] font-bold text-blue-700">
+                              {selectedOptionalFields.length} selected
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                            {selectedOptionalFields.map(key => {
+                              const definition = ALL_REG_COLUMNS.find(field => field.key === key);
+                              return definition ? renderInput(key, definition.label, false, true) : null;
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      <div ref={optionalFieldsRef} className="relative mt-5 border-t border-slate-100 pt-5">
+                        <button
+                          type="button"
+                          onClick={() => setShowOptionalFields(previous => !previous)}
+                          aria-expanded={showOptionalFields}
+                          className={cn(
+                            'flex w-full items-center justify-between rounded-md border bg-white px-3 py-2.5 text-left text-[10px] font-bold uppercase text-slate-600 transition-colors',
+                            showOptionalFields
+                              ? 'border-blue-400 ring-2 ring-blue-100'
+                              : 'border-slate-200 hover:border-slate-300'
+                          )}
+                        >
+                          <span>Edit Optional Fields</span>
+                          <span className="flex items-center gap-2">
+                            <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[9px] text-blue-700">
+                              {selectedOptionalFields.length}
+                            </span>
+                            <ChevronDown
+                              size={14}
+                              className={cn('transition-transform', showOptionalFields && 'rotate-180')}
+                            />
+                          </span>
+                        </button>
+
+                        {showOptionalFields && (
+                          <div className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-md border border-slate-200 bg-white shadow-xl">
+                            <div className="relative border-b border-slate-100 p-2.5">
+                              <Search size={14} className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-slate-400" />
+                              <input
+                                type="search"
+                                value={fieldSearch}
+                                onChange={event => setFieldSearch(event.target.value)}
+                                placeholder="Search optional fields..."
+                                className="h-9 w-full rounded-md border border-slate-200 pl-9 pr-3 text-[11px] outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                                autoFocus
+                              />
+                            </div>
+                            <div className="max-h-[min(12rem,28vh)] overflow-y-auto p-1.5">
+                              {filteredOptionalFields.map(field => {
+                                const checked = selectedOptionalFields.includes(field.key);
+                                return (
+                                  <label
+                                    key={field.key}
+                                    className="flex cursor-pointer items-center gap-2 rounded px-2.5 py-2 text-[10px] font-semibold text-slate-600 hover:bg-slate-50"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => toggleOptionalField(field.key)}
+                                    />
+                                    <span className="truncate">{field.label}</span>
+                                  </label>
+                                );
+                              })}
+                              {filteredOptionalFields.length === 0 && (
+                                <div className="px-3 py-8 text-center text-[10px] text-slate-400">
+                                  No matching fields
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200 bg-white px-5 py-3">
+                      {error && (
+                        <p className="mr-auto self-center text-[10px] font-semibold text-red-600">{error}</p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={submit}
+                        disabled={saving}
+                        className="flex h-9 min-w-36 items-center justify-center gap-1.5 rounded-md bg-blue-600 px-5 text-[10px] font-bold uppercase text-white shadow-sm hover:bg-blue-700 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        <Check size={13} />
+                        {saving ? 'Saving...' : 'Update Registration'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </motion.section>
+        </>
+      )}
+    </AnimatePresence>
+  );
+}

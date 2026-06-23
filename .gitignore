@@ -2,7 +2,9 @@ node_modules/
 build/
 dist/
 coverage/
+dc-report/
 .DS_Store
 *.log
+server.js
 .env*
 !.env.example

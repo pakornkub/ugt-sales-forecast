@@ -3,6 +3,12 @@ import { EMPTY_COLUMN_FILTER } from '../../types/forecast';
 
 export function getRegistrationFieldValue(reg: Registration, key: string): string {
   const value = reg[key as keyof Registration];
+  if (key.startsWith('inventory') && typeof value === 'number') {
+    return value.toLocaleString(undefined, {
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3,
+    });
+  }
   return String(value ?? '');
 }
 

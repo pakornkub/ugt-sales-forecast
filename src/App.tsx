@@ -3,93 +3,212 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { lazy, Suspense, useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { useLoading } from './lib/loadingContext';
 import { 
-  BarChart3, 
-  Table as TableIcon, 
+  BarChart3,
   Settings, 
   FileSpreadsheet, 
   ChevronRight, 
   Download,
   Plus,
   RefreshCw,
-  LayoutDashboard,
   Calendar,
   Layers,
-  BarChart,
   PieChart as PieIcon,
   TrendingUp,
   Box,
   Truck,
-  X
+  X,
+  LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { format, addMonths, addDays, startOfMonth, endOfMonth, parseISO, startOfISOWeek, endOfISOWeek } from 'date-fns';
-import * as XLSX from 'xlsx';
-import { 
-  BarChart as ReBarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  AreaChart,
-  Area,
-  PieChart,
-  Pie,
-  Cell,
-  Legend
-} from 'recharts';
+import { format, addMonths, addDays, getDay, startOfMonth, endOfMonth, parseISO } from 'date-fns';
 import { cn } from './lib/utils';
 import { ForecastInputTable } from './components/forecast/ForecastInputTable';
 import { getForecastCellValue } from './components/forecast/forecastCellUtils';
 import { filterRegistrations, hasActiveColumnFilters } from './components/forecast/forecastFilterUtils';
-import { MOCK_REGISTRATIONS } from './data/mockRegistrations';
+import { api, ApiError, type AuthUser, type SnapshotStatus } from './lib/api';
 import type {
   ColumnFiltersState,
+  ColumnFilterValue,
+  ActualValue,
   CPLPrice,
   Dimension,
+  ForecastSummary,
+  ForecastSummaryRequest,
   ForecastValue,
+  InventoryRow,
+  PriceFormula,
   Registration,
   ValueType,
 } from './types/forecast';
 
+const lazyRechart = (name: string) => lazy(async () => {
+  const module = await import('recharts');
+  return { default: module[name as keyof typeof module] as React.ComponentType<any> };
+});
+const ResponsiveContainer = lazyRechart('ResponsiveContainer');
+const AreaChart = lazyRechart('AreaChart');
+const Area = lazyRechart('Area');
+const CartesianGrid = lazyRechart('CartesianGrid');
+const XAxis = lazyRechart('XAxis');
+const YAxis = lazyRechart('YAxis');
+const Tooltip = lazyRechart('Tooltip');
+const PieChart = lazyRechart('PieChart');
+const Pie = lazyRechart('Pie');
+const Cell = lazyRechart('Cell');
+const Legend = lazyRechart('Legend');
+const ReBarChart = lazyRechart('BarChart');
+const Bar = lazyRechart('Bar');
+import { EMPTY_COLUMN_FILTER } from './types/forecast';
+
 // --- Types ---
 
-type AppTab = 'forecast' | 'master' | 'dashboard' | 'weekly' | 'monthly' | 'yearly' | 'mtp' | 'pdc' | 'inventory' | 'suggestion';
+type AppTab = 'forecast' | 'master' | 'dashboard' | 'weekly' | 'monthly' | 'yearly' | 'mtp' | 'pdc' | 'suggestion';
+const FORECAST_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
+const FORECAST_SUMMARY_CACHE_PREFIX = 'forecast-summary:v1:';
+const STAMP_PERIOD_OPTIONS = ['No', 'Weekly1', 'Weekly2', 'Weekly3', 'Weekly4', 'Weekly5', 'Monthly1', 'Monthly2'];
 
-// --- Mock Data ---
+interface PendingForecastEdit {
+  registrationId: string;
+  period: string;
+  version: string;
+  baseValue: number;
+  currentValue: number;
+}
 
-const MOCK_CPL_PRICES: CPLPrice[] = [
-  { month: '2026-05', price: 1200 },
-  { month: '2026-06', price: 1200 },
-  { month: '2026-07', price: 1300 },
-  { month: '2026-08', price: 1300 },
-  { month: '2026-09', price: 1300 },
-  { month: '2026-10', price: 1400 },
-  { month: '2026-11', price: 1400 },
-  { month: '2026-12', price: 1400 },
-  { month: '2027-01', price: 1500 },
-];
-
-const INITIAL_FORECAST: ForecastValue[] = MOCK_REGISTRATIONS.flatMap(reg => 
-  MOCK_CPL_PRICES.map(cpl => ({
-    registrationId: reg.id,
-    month: cpl.month,
-    version: 'Current Forecast',
-    qtyAct: Math.floor(Math.random() * 500),
-    qtyFcst: 0,
-    priceAct: 1500,
-  }))
-);
+interface InventoryCommitPreviewRow {
+  key: string;
+  registration: Registration;
+  period: string;
+  baseValue: number;
+  currentValue: number;
+  delta: number;
+  pendingMaterialDelta: number;
+  inventory?: InventoryRow;
+}
 
 // --- Components ---
 
+const MONTH_OPTIONS = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+function MonthYearPicker({
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  ariaLabel: string;
+}) {
+  const selectedYear = Number(value.slice(0, 4)) || new Date().getFullYear();
+  const selectedMonth = Number(value.slice(5, 7)) - 1;
+  const [isOpen, setIsOpen] = useState(false);
+  const [displayYear, setDisplayYear] = useState(selectedYear);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  const yearOptions = useMemo(
+    () => Array.from({ length: 51 }, (_, index) => 2000 + index),
+    []
+  );
+
+  useEffect(() => {
+    if (!isOpen) setDisplayYear(selectedYear);
+  }, [isOpen, selectedYear]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!pickerRef.current?.contains(event.target as Node)) setIsOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [isOpen]);
+
+  const selectMonth = (monthIndex: number) => {
+    onChange(`${displayYear}-${String(monthIndex + 1).padStart(2, '0')}`);
+    setIsOpen(false);
+  };
+
+  return (
+    <div ref={pickerRef} className="relative flex-1">
+      <button
+        type="button"
+        onClick={() => setIsOpen(previous => !previous)}
+        className="flex w-full items-center justify-between rounded border border-slate-200 bg-slate-50 p-1.5 text-left text-xs text-slate-700 outline-none transition-colors hover:border-slate-300 focus:border-blue-400"
+        aria-label={ariaLabel}
+        aria-expanded={isOpen}
+      >
+        <span>{format(parseISO(`${value}-01`), 'MMMM yyyy')}</span>
+        <Calendar size={14} className="shrink-0 text-slate-500" />
+      </button>
+
+      {isOpen && (
+        <div className="absolute left-0 top-full z-[100] mt-2 w-72 rounded-lg border border-slate-200 bg-white p-3 shadow-xl">
+          <div className="mb-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setDisplayYear(year => Math.max(2000, year - 1))}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-slate-200 text-slate-500 hover:border-blue-200 hover:text-blue-600"
+              aria-label="Previous year"
+            >
+              <ChevronRight size={16} className="rotate-180" />
+            </button>
+            <select
+              value={displayYear}
+              onChange={event => setDisplayYear(Number(event.target.value))}
+              className="sf-select h-8 min-w-0 flex-1 rounded border px-2 text-sm outline-none"
+              aria-label="Select year"
+            >
+              {yearOptions.map(year => (
+                <option key={year} value={year}>{year}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setDisplayYear(year => Math.min(2050, year + 1))}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-slate-200 text-slate-500 hover:border-blue-200 hover:text-blue-600"
+              aria-label="Next year"
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-4 gap-1.5">
+            {MONTH_OPTIONS.map((month, monthIndex) => {
+              const isSelected = displayYear === selectedYear && monthIndex === selectedMonth;
+              return (
+                <button
+                  key={month}
+                  type="button"
+                  onClick={() => selectMonth(monthIndex)}
+                  className={cn(
+                    "h-9 rounded text-xs font-bold transition-colors",
+                    isSelected
+                      ? "bg-blue-600 text-white"
+                      : "text-slate-600 hover:bg-blue-50 hover:text-blue-700"
+                  )}
+                >
+                  {month}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('forecast');
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const [isAddingVersion, setIsAddingVersion] = useState(false);
   const [isEditingVersion, setIsEditingVersion] = useState(false);
   const [newVersionName, setNewVersionName] = useState('');
@@ -98,11 +217,35 @@ export default function App() {
   const [isAddingCpl, setIsAddingCpl] = useState(false);
   const [selectedFy, setSelectedFy] = useState(2026);
   const cplTableRef = useRef<HTMLDivElement>(null);
-  const [registrations, setRegistrations] = useState<Registration[]>(MOCK_REGISTRATIONS);
+  const [registrations, setRegistrations] = useState<Registration[]>([]);
+  const [managedRegistrations, setManagedRegistrations] = useState<Registration[]>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>({});
-  const [forecastData, setForecastData] = useState<ForecastValue[]>(INITIAL_FORECAST);
-  const [cplPrices, setCplPrices] = useState<CPLPrice[]>(MOCK_CPL_PRICES);
-  const [versions, setVersions] = useState(['Current Forecast', 'BB FY26', 'SepF FY26']);
+  const [forecastData, setForecastData] = useState<ForecastValue[]>([]);
+  const forecastDataRef = useRef<ForecastValue[]>([]);
+  const forecastPositionRef = useRef(new Map<string, number>());
+  const [pendingForecastEdits, setPendingForecastEdits] = useState<Record<string, PendingForecastEdit>>({});
+  const [forecastSummary, setForecastSummary] = useState<ForecastSummary | null>(null);
+  const [isForecastSummaryUpdating, setIsForecastSummaryUpdating] = useState(false);
+  const [forecastAuditVersion, setForecastAuditVersion] = useState(0);
+  const [inventoryByRegistrationId, setInventoryByRegistrationId] = useState<Map<string, InventoryRow>>(new Map());
+  const [isInventoryLoading, setIsInventoryLoading] = useState(false);
+  const [inventoryCommitPreviewOpen, setInventoryCommitPreviewOpen] = useState(false);
+  const inventoryByRegistrationIdRef = useRef<Map<string, InventoryRow>>(new Map());
+  const pendingInventoryRequestIdsRef = useRef<Set<string>>(new Set());
+  const mergedRegistrationCacheRef = useRef(new Map<string, {
+    registration: Registration;
+    inventory?: InventoryRow;
+    merged: Registration;
+  }>());
+  const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
+  const [isRefreshingSnapshot, setIsRefreshingSnapshot] = useState(false);
+  const [snapshotDataVersion, setSnapshotDataVersion] = useState(0);
+  const snapshotVersionRef = useRef<string | null>(null);
+  const hasSnapshotStatusRef = useRef(false);
+  const [cplPrices, setCplPrices] = useState<CPLPrice[]>([]);
+  const [naphthaprices, setNaphthaprices] = useState<CPLPrice[]>([]);
+  const [benzeneprices, setBenzeneprices] = useState<CPLPrice[]>([]);
+  const [versions, setVersions] = useState<string[]>(['Current Forecast']);
   const [selectedVersion, setSelectedVersion] = useState('Current Forecast');
   const [stampPeriod, setStampPeriod] = useState('No');
   const [planningView, setPlanningView] = useState<'sale' | 'accounting' | 'production'>('sale');
@@ -110,14 +253,663 @@ export default function App() {
   const [selectedType, setSelectedType] = useState<ValueType>('Fcst');
   const [forecastMode, setForecastMode] = useState<'month' | 'week' | 'day'>('month');
   const isCurrentForecastVersion = selectedVersion === 'Current Forecast';
+  const [formulaMap, setFormulaMap] = useState<Map<string, PriceFormula>>(new Map());
+  const handleFormulaChange = useCallback((regId: string, formula: PriceFormula) => {
+    setFormulaMap(prev => new Map(prev).set(regId, formula));
+  }, []);
+  const [fixedPriceMap, setFixedPriceMap] = useState<Map<string, Map<string, number>>>(new Map());
+  const handleFixedPriceChange = useCallback((regId: string, month: string, price: number) => {
+    setFixedPriceMap(prev => {
+      const next = new Map(prev as Map<string, Map<string, number>>);
+      const regPrices = new Map<string, number>(next.get(regId));
+      regPrices.set(month, price);
+      next.set(regId, regPrices);
+      return next;
+    });
+  }, []);
+  const [formulaFilter, setFormulaFilter] = useState<ColumnFilterValue>(EMPTY_COLUMN_FILTER);
   const [dateRange, setDateRange] = useState({ 
     start: format(new Date(), 'yyyy-MM'), 
     end: format(addMonths(new Date(), 3), 'yyyy-MM') 
   });
-  const startVisibleRef = useRef<HTMLInputElement | null>(null);
-  const endVisibleRef = useRef<HTMLInputElement | null>(null);
   const startDatePickerRef = useRef<HTMLInputElement | null>(null);
   const endDatePickerRef = useRef<HTMLInputElement | null>(null);
+  const hasSkippedInitialActualRefreshRef = useRef(false);
+  const hasSkippedInitialRegistrationFilterRef = useRef(false);
+  const isLoadingMoreRef = useRef(false);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
+  const registrationLoadGenerationRef = useRef(0);
+
+  const [isLoading, setIsLoading] = useState(true);
+  const [isTableDataLoading, setIsTableDataLoading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [registrationCursor, setRegistrationCursor] = useState<string | null>(null);
+  const [hasMoreRegistrations, setHasMoreRegistrations] = useState(true);
+  const [appError, setAppError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isForecastHeaderCollapsed, setIsForecastHeaderCollapsed] = useState(false);
+  const { start: loadStart, done: loadDone } = useLoading();
+  const flash = (ms = 350) => { loadStart(); setTimeout(loadDone, ms); };
+
+  useEffect(() => {
+    let cancelled = false;
+    api.auth.me()
+      .then(result => {
+        if (cancelled) return;
+        setAuthUser(result.user);
+      })
+      .catch(error => {
+        if (cancelled) return;
+        if (error instanceof ApiError && error.status === 401) {
+          const loginUrl = typeof error.details.loginUrl === 'string'
+            ? error.details.loginUrl
+            : api.auth.loginUrl();
+          window.location.href = loginUrl;
+          return;
+        }
+        setAppError(error instanceof ApiError ? error.message : 'Failed to check sign-in status');
+      })
+      .finally(() => {
+        if (!cancelled) setIsAuthLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isAccountMenuOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!accountMenuRef.current?.contains(event.target as Node)) {
+        setIsAccountMenuOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsAccountMenuOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [isAccountMenuOpen]);
+
+  const handleLogout = useCallback(async () => {
+    loadStart();
+    try {
+      await api.auth.logout();
+    } catch (error) {
+      setAppError(error instanceof ApiError ? error.message : 'Failed to log out');
+    } finally {
+      loadDone();
+      setIsAccountMenuOpen(false);
+    }
+  }, [loadDone, loadStart]);
+
+  useEffect(() => {
+    forecastDataRef.current = forecastData;
+    forecastPositionRef.current = new Map(
+      forecastData.map((item, index) => [
+        `${item.registrationId}|${item.version}|${item.month}`,
+        index,
+      ])
+    );
+  }, [forecastData]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const status = await api.sync.status();
+        if (cancelled) return;
+        setSnapshotStatus(status);
+        if (
+          hasSnapshotStatusRef.current &&
+          status.activeVersion &&
+          snapshotVersionRef.current !== status.activeVersion
+        ) {
+          setSnapshotDataVersion(version => version + 1);
+        }
+        snapshotVersionRef.current = status.activeVersion;
+        hasSnapshotStatusRef.current = true;
+      } catch (error) {
+        if (!cancelled) console.error('[snapshot status] failed:', error);
+      }
+    };
+    void poll();
+    const timer = window.setInterval(poll, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const mergeInventoryRows = useCallback((rows: InventoryRow[]) => {
+    if (rows.length === 0) return;
+    setInventoryByRegistrationId(previous => {
+      const next = new Map(previous);
+      rows.forEach(row => {
+        if (row.registrationId) next.set(row.registrationId, row);
+      });
+      inventoryByRegistrationIdRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const loadInventoryForRegistrations = useCallback(async (
+    registrationList: Registration[],
+    signal?: AbortSignal
+  ) => {
+    const registrationIds = registrationList
+      .map(registration => registration.id)
+      .filter(id =>
+        id &&
+        !inventoryByRegistrationIdRef.current.has(id) &&
+        !pendingInventoryRequestIdsRef.current.has(id)
+      );
+    if (registrationIds.length === 0) return;
+
+    registrationIds.forEach(id => pendingInventoryRequestIdsRef.current.add(id));
+    setIsInventoryLoading(true);
+    try {
+      const rows = await api.inventory.query(registrationIds, signal);
+      if (!signal?.aborted) mergeInventoryRows(rows);
+    } catch (error) {
+      if (!signal?.aborted) console.error('[inventory] scoped load failed:', error);
+    } finally {
+      registrationIds.forEach(id => pendingInventoryRequestIdsRef.current.delete(id));
+      if (pendingInventoryRequestIdsRef.current.size === 0) setIsInventoryLoading(false);
+    }
+  }, [mergeInventoryRows]);
+
+  const handleRefreshSnapshot = useCallback(async () => {
+    if (isRefreshingSnapshot) return;
+    setIsRefreshingSnapshot(true);
+    loadStart();
+    try {
+      const status = await api.sync.refresh();
+      setSnapshotStatus(status);
+      snapshotVersionRef.current = status.activeVersion;
+      setSnapshotDataVersion(version => version + 1);
+    } catch (error) {
+      setAppError(error instanceof ApiError ? error.message : 'Failed to refresh source data');
+    } finally {
+      setIsRefreshingSnapshot(false);
+      loadDone();
+    }
+  }, [isRefreshingSnapshot, loadDone, loadStart]);
+
+  const serverRegistrationFilters = useMemo(
+    () => Object.fromEntries(
+      (Object.entries(columnFilters) as Array<[string, ColumnFilterValue]>)
+        .filter(([key, filter]) =>
+          key !== 'priceFormula' &&
+          !key.startsWith('carry') &&
+          !key.startsWith('inventory') &&
+          filter.selectedValues.length > 0
+        )
+        .map(([key, filter]) => [key, filter.selectedValues])
+    ),
+    [columnFilters]
+  );
+  const serverRegistrationFilterKey = useMemo(
+    () => JSON.stringify(serverRegistrationFilters),
+    [serverRegistrationFilters]
+  );
+  const loadFilterOptions = useCallback(
+    (columnKey: string, search: string, cursor?: string | null) =>
+      api.registrations.filterOptions(
+        columnKey,
+        search,
+        serverRegistrationFilters,
+        cursor
+      ),
+    [serverRegistrationFilters]
+  );
+
+  const mergeLoadedForecastData = useCallback((
+    forecasts: ForecastValue[],
+    actuals: ActualValue[],
+    activeVersions: string[]
+  ) => {
+    const actualOnlyRegistrations = actuals
+      .map(actual => actual.registration)
+      .filter((registration): registration is Registration => Boolean(registration));
+    const matchedRegistrationIds = new Set(
+      actuals
+        .filter(actual => actual.sourceStatus === 'matched')
+        .map(actual => actual.registrationId)
+    );
+    if (actualOnlyRegistrations.length > 0 || matchedRegistrationIds.size > 0) {
+      setRegistrations(previous => {
+        const next = new Map(previous.map(registration => [
+          registration.id,
+          matchedRegistrationIds.has(registration.id)
+            ? { ...registration, sourceStatus: 'matched' as const }
+            : registration,
+        ]));
+        actualOnlyRegistrations.forEach(registration => next.set(registration.id, registration));
+        return Array.from(next.values());
+      });
+    }
+
+    setForecastData(previous => {
+      const next = new Map<string, ForecastValue>(
+        previous.map(item => [`${item.registrationId}|${item.version}|${item.month}`, item])
+      );
+
+      forecasts.forEach(item => {
+        next.set(`${item.registrationId}|${item.version}|${item.month}`, item);
+      });
+
+      actuals.forEach(actual => {
+        activeVersions.forEach(version => {
+          const key = `${actual.registrationId}|${version}|${actual.month}`;
+          const existing = next.get(key);
+          next.set(key, {
+            registrationId: actual.registrationId,
+            month: actual.month,
+            version,
+            qtyFcst: existing?.qtyFcst ?? 0,
+            ...existing,
+            qtyAct: actual.qtyAct,
+            priceAct: actual.priceAct,
+            amountAct: actual.amountAct,
+            carryInETD: actual.carryInETD,
+            carryOutETD: actual.carryOutETD,
+            carryInLoading: actual.carryInLoading,
+            carryOutLoading: actual.carryOutLoading,
+          });
+        });
+      });
+
+      return Array.from(next.values());
+    });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const generation = registrationLoadGenerationRef.current;
+    async function load() {
+      try {
+        pendingInventoryRequestIdsRef.current.clear();
+        mergedRegistrationCacheRef.current.clear();
+        inventoryByRegistrationIdRef.current = new Map();
+        setInventoryByRegistrationId(new Map());
+        setIsLoading(true);
+        loadStart();
+        setAppError(null);
+        const [registrationPage, managed, cpls, vers] = await Promise.all([
+          api.registrations.page(null, 80, {}, controller.signal),
+          api.registrations.managed(),
+          api.cpl.list(),
+          api.versions.list(),
+        ]);
+        if (cancelled) return;
+        const allVers = vers.length > 0 ? vers : ['Current Forecast'];
+        setVersions(allVers);
+        setSelectedVersion(previous =>
+          allVers.includes(previous) ? previous : allVers[0]
+        );
+        if (generation !== registrationLoadGenerationRef.current) return;
+        setRegistrations(registrationPage.items);
+        setManagedRegistrations(managed);
+        setRegistrationCursor(registrationPage.nextCursor);
+        setHasMoreRegistrations(registrationPage.hasMore);
+        setCplPrices(cpls);
+        setNaphthaprices(cpls.map(c => ({ month: c.month, price: 0 })));
+        setBenzeneprices(cpls.map(c => ({ month: c.month, price: 0 })));
+        setIsLoading(false);
+        loadDone();
+
+        const registrationIds = registrationPage.items.map(reg => reg.id);
+        if (registrationIds.length === 0) return;
+        void loadInventoryForRegistrations(registrationPage.items, controller.signal);
+
+        setIsTableDataLoading(true);
+        const [forecasts, actuals] = await Promise.all([
+          api.forecast.list({ registrationIds, signal: controller.signal }),
+          api.actuals.list(
+            dateRange.start.slice(0, 7),
+            dateRange.end.slice(0, 7),
+            registrationIds,
+            {},
+            forecastMode,
+            controller.signal
+          ),
+        ]);
+        if (!cancelled && generation === registrationLoadGenerationRef.current) {
+          mergeLoadedForecastData(forecasts, actuals, allVers);
+        }
+      } catch (err) {
+        if (!cancelled && !controller.signal.aborted) {
+          const msg = err instanceof ApiError ? err.message : 'Failed to load data. Is the API server running?';
+          setAppError(msg);
+          setVersions(['Current Forecast']);
+        }
+      } finally {
+        if (!cancelled) setIsLoading(false);
+        if (!cancelled) setIsTableDataLoading(false);
+        loadDone();
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [loadInventoryForRegistrations, mergeLoadedForecastData, snapshotDataVersion]);
+
+  useEffect(() => {
+    if (activeTab !== 'master') return;
+
+    let cancelled = false;
+    async function loadPriceManagement() {
+      try {
+        const prices = await api.cpl.list(selectedFy);
+        if (cancelled) return;
+
+        setCplPrices(prices);
+        setNaphthaprices(previous => {
+          const pricesByMonth = new Map(previous.map(item => [item.month, item.price]));
+          return prices.map(item => ({
+            month: item.month,
+            price: pricesByMonth.get(item.month) ?? 0,
+          }));
+        });
+        setBenzeneprices(previous => {
+          const pricesByMonth = new Map(previous.map(item => [item.month, item.price]));
+          return prices.map(item => ({
+            month: item.month,
+            price: pricesByMonth.get(item.month) ?? 0,
+          }));
+        });
+        setAppError(null);
+      } catch (err) {
+        if (!cancelled) {
+          const message = err instanceof ApiError
+            ? err.message
+            : 'Failed to load Price Management data';
+          setAppError(message);
+        }
+      }
+    }
+
+    loadPriceManagement();
+    return () => { cancelled = true; };
+  }, [activeTab, selectedFy]);
+
+  const loadMoreRegistrations = useCallback(async () => {
+    if (isLoadingMoreRef.current || !hasMoreRegistrations || !registrationCursor) return;
+
+    const generation = registrationLoadGenerationRef.current;
+    const controller = new AbortController();
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = controller;
+    isLoadingMoreRef.current = true;
+    setIsLoadingMore(true);
+    try {
+      const page = await api.registrations.page(
+        registrationCursor,
+        80,
+        serverRegistrationFilters,
+        controller.signal
+      );
+      if (generation !== registrationLoadGenerationRef.current) return;
+      const registrationIds = page.items.map(reg => reg.id);
+      const activeVersions = versions.length > 0 ? versions : ['Current Forecast'];
+
+      setRegistrations(previous => {
+        const existingIds = new Set(previous.map(reg => reg.id));
+        return [...previous, ...page.items.filter(reg => !existingIds.has(reg.id))];
+      });
+      setRegistrationCursor(page.nextCursor);
+      setHasMoreRegistrations(page.hasMore);
+      void loadInventoryForRegistrations(page.items, controller.signal);
+
+      if (registrationIds.length > 0) {
+        const [forecasts, actuals] = await Promise.all([
+          api.forecast.list({ registrationIds, signal: controller.signal }),
+          api.actuals.list(
+            dateRange.start.slice(0, 7),
+            dateRange.end.slice(0, 7),
+            registrationIds,
+            serverRegistrationFilters,
+            forecastMode,
+            controller.signal
+          ),
+        ]);
+        if (generation === registrationLoadGenerationRef.current) {
+          mergeLoadedForecastData(forecasts, actuals, activeVersions);
+        }
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        const message = err instanceof ApiError ? err.message : 'Failed to load more rows';
+        setAppError(message);
+      }
+    } finally {
+      if (loadMoreAbortRef.current === controller) loadMoreAbortRef.current = null;
+      if (generation === registrationLoadGenerationRef.current) {
+        isLoadingMoreRef.current = false;
+        setIsLoadingMore(false);
+      }
+    }
+  }, [
+    dateRange.end,
+    dateRange.start,
+    hasMoreRegistrations,
+    loadInventoryForRegistrations,
+    mergeLoadedForecastData,
+    registrationCursor,
+    serverRegistrationFilters,
+    versions,
+    forecastMode,
+  ]);
+
+  useEffect(() => {
+    if (!hasSkippedInitialRegistrationFilterRef.current) {
+      hasSkippedInitialRegistrationFilterRef.current = true;
+      return;
+    }
+
+    const generation = registrationLoadGenerationRef.current + 1;
+    registrationLoadGenerationRef.current = generation;
+    loadMoreAbortRef.current?.abort();
+    isLoadingMoreRef.current = false;
+    setIsLoadingMore(false);
+    setIsTableDataLoading(true);
+    setRegistrations([]);
+    setRegistrationCursor(null);
+    setHasMoreRegistrations(false);
+
+    let cancelled = false;
+    const controller = new AbortController();
+    async function loadFilteredRegistrations() {
+      try {
+        const page = await api.registrations.page(
+          null,
+          80,
+          serverRegistrationFilters,
+          controller.signal
+        );
+        if (cancelled || generation !== registrationLoadGenerationRef.current) return;
+
+        setRegistrations(page.items);
+        setRegistrationCursor(page.nextCursor);
+        setHasMoreRegistrations(page.hasMore);
+        void loadInventoryForRegistrations(page.items, controller.signal);
+
+        const registrationIds = page.items.map(reg => reg.id);
+        if (registrationIds.length === 0) return;
+
+        const activeVersions = versions.length > 0 ? versions : ['Current Forecast'];
+        const [forecasts, actuals] = await Promise.all([
+          api.forecast.list({ registrationIds, signal: controller.signal }),
+          api.actuals.list(
+            dateRange.start.slice(0, 7),
+            dateRange.end.slice(0, 7),
+            registrationIds,
+            serverRegistrationFilters,
+            forecastMode,
+            controller.signal
+          ),
+        ]);
+        if (
+          !cancelled &&
+          !controller.signal.aborted &&
+          generation === registrationLoadGenerationRef.current
+        ) {
+          mergeLoadedForecastData(forecasts, actuals, activeVersions);
+        }
+      } catch (err) {
+        if (!cancelled && generation === registrationLoadGenerationRef.current) {
+          const message = err instanceof ApiError ? err.message : 'Failed to apply filters';
+          setAppError(message);
+        }
+      } finally {
+        if (!cancelled && generation === registrationLoadGenerationRef.current) {
+          setIsTableDataLoading(false);
+        }
+      }
+    }
+
+    void loadFilteredRegistrations();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [serverRegistrationFilterKey]);
+
+  useEffect(() => {
+    if (!hasSkippedInitialActualRefreshRef.current) {
+      hasSkippedInitialActualRefreshRef.current = true;
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    loadMoreAbortRef.current?.abort();
+    const startMonth = dateRange.start.slice(0, 7);
+    const endMonth = dateRange.end.slice(0, 7);
+
+    async function refreshActuals() {
+      try {
+        const registrationIds = registrations.map(reg => reg.id);
+        if (registrationIds.length === 0) return;
+        const acts = await api.actuals.list(
+          startMonth,
+          endMonth,
+          registrationIds,
+          serverRegistrationFilters,
+          forecastMode,
+          controller.signal
+        );
+        if (cancelled) return;
+
+        const actualOnlyRegistrations = acts
+          .map(actual => actual.registration)
+          .filter((registration): registration is Registration => Boolean(registration));
+        const matchedRegistrationIds = new Set(
+          acts
+            .filter(actual => actual.sourceStatus === 'matched')
+            .map(actual => actual.registrationId)
+        );
+        setRegistrations(previous => {
+          const next = new Map(
+            previous
+              .filter(registration => registration.sourceStatus !== 'actual_only')
+              .map(registration => [
+                registration.id,
+                matchedRegistrationIds.has(registration.id)
+                  ? { ...registration, sourceStatus: 'matched' as const }
+                  : { ...registration, sourceStatus: 'registration_only' as const },
+              ])
+          );
+          actualOnlyRegistrations.forEach(registration => next.set(registration.id, registration));
+          return Array.from(next.values());
+        });
+
+        const activeVersions = versions.length > 0 ? versions : ['Current Forecast'];
+        const actualMap = new Map(
+          acts.map(actual => [`${actual.registrationId}|${actual.month}`, actual])
+        );
+
+        setForecastData(previous => {
+          const next = new Map<string, ForecastValue>();
+
+          previous.forEach(item => {
+            const isRequestedPeriod = forecastMode === 'week'
+              ? /^\d{4}-\d{2}-\d{2}$/.test(item.month)
+              : /^\d{4}-\d{2}$/.test(item.month);
+            const isInRequestedRange =
+              isRequestedPeriod &&
+              item.month.slice(0, 7) >= startMonth &&
+              item.month.slice(0, 7) <= endMonth;
+            const actual = isInRequestedRange
+              ? actualMap.get(`${item.registrationId}|${item.month}`)
+              : undefined;
+
+            next.set(`${item.registrationId}|${item.version}|${item.month}`, {
+              ...item,
+              ...(isInRequestedRange
+                ? {
+                    qtyAct: actual?.qtyAct ?? 0,
+                    priceAct: actual?.priceAct ?? 0,
+                    amountAct: actual?.amountAct ?? 0,
+                    carryInETD: actual?.carryInETD ?? 0,
+                    carryOutETD: actual?.carryOutETD ?? 0,
+                    carryInLoading: actual?.carryInLoading ?? 0,
+                    carryOutLoading: actual?.carryOutLoading ?? 0,
+                  }
+                : {}),
+            });
+          });
+
+          acts.forEach(actual => {
+            activeVersions.forEach(version => {
+              const key = `${actual.registrationId}|${version}|${actual.month}`;
+              if (next.has(key)) return;
+              next.set(key, {
+                registrationId: actual.registrationId,
+                month: actual.month,
+                version,
+                qtyAct: actual.qtyAct,
+                qtyFcst: 0,
+                priceAct: actual.priceAct,
+                amountAct: actual.amountAct,
+                carryInETD: actual.carryInETD,
+                carryOutETD: actual.carryOutETD,
+                carryInLoading: actual.carryInLoading,
+                carryOutLoading: actual.carryOutLoading,
+              });
+            });
+          });
+
+          return Array.from(next.values());
+        });
+      } catch (err) {
+        if (!cancelled && !controller.signal.aborted) {
+          const message = err instanceof ApiError ? err.message : 'Failed to refresh actual data';
+          setAppError(message);
+        }
+      }
+    }
+
+    refreshActuals();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [
+    dateRange.start,
+    dateRange.end,
+    serverRegistrationFilterKey,
+    versions,
+    forecastMode,
+  ]);
 
   const openDatePicker = (input: HTMLInputElement | null) => {
     if (!input) return;
@@ -183,9 +975,67 @@ export default function App() {
     // If both are non-month modes (week/day to day/week), keep dateRange as-is
   };
 
-  const filteredRegistrations = useMemo(
-    () => filterRegistrations(registrations, columnFilters),
-    [columnFilters, registrations]
+  const inventoryByMaterialKey = useMemo(
+    () => {
+      const map = new Map<string, InventoryRow>();
+      inventoryByRegistrationId.forEach(row => {
+        map.set(`${row.plantCode}|${row.materialCode}`, row);
+      });
+      return map;
+    },
+    [inventoryByRegistrationId]
+  );
+
+  const registrationsWithInventory = useMemo(
+    () => registrations.map(registration => {
+      const inventory =
+        inventoryByRegistrationId.get(registration.id) ??
+        inventoryByMaterialKey.get(`${registration.plantCode}|${registration.materialCode}`);
+      if (!inventory) return registration;
+      const cached = mergedRegistrationCacheRef.current.get(registration.id);
+      if (cached?.registration === registration && cached.inventory === inventory) {
+        return cached.merged;
+      }
+      const merged = {
+        ...registration,
+        inventoryA0Qty: inventory.a0Qty,
+        inventoryNonA0Qty: inventory.nonA0Qty,
+        inventoryWaitJudgeQty: inventory.waitJudgeQty,
+        inventoryOgQty: inventory.ogQty,
+        inventoryYoQty: inventory.yoQty,
+        inventoryDate: inventory.inventoryDate,
+      };
+      mergedRegistrationCacheRef.current.set(registration.id, {
+        registration,
+        inventory,
+        merged,
+      });
+      return merged;
+    }),
+    [inventoryByMaterialKey, inventoryByRegistrationId, registrations]
+  );
+
+  const filteredRegistrations = useMemo(() => {
+    const clientOnlyFilters = Object.fromEntries(
+      (Object.entries(columnFilters) as Array<[string, ColumnFilterValue]>)
+        .filter(([key]) => key.startsWith('carry') || key.startsWith('inventory'))
+    );
+    let regs = filterRegistrations(registrationsWithInventory, clientOnlyFilters);
+    if (formulaFilter.selectedValues.length > 0) {
+      regs = regs.filter(reg =>
+        formulaFilter.selectedValues.includes(formulaMap.get(reg.id) ?? 'CPL')
+      );
+    }
+    return regs;
+  }, [columnFilters, formulaFilter, formulaMap, registrationsWithInventory]);
+
+  const displayedRegistrations = useMemo(() => {
+    return filteredRegistrations;
+  }, [filteredRegistrations]);
+
+  const allDisplayedRegistrations = useMemo(
+    () => registrationsWithInventory,
+    [registrationsWithInventory]
   );
 
   useEffect(() => {
@@ -207,12 +1057,14 @@ export default function App() {
         curr = addMonths(curr, 1);
       }
     } else if (forecastMode === 'week') {
-      let curr = parseISO(dateRange.start);
-      const end = parseISO(dateRange.end);
+      const startMonthDate = startOfMonth(parseISO(dateRange.start));
+      const endMonthDate = endOfMonth(parseISO(dateRange.end));
+      const daysUntilWednesday = (3 - getDay(startMonthDate) + 7) % 7;
+      let curr = addDays(startMonthDate, daysUntilWednesday);
+      const end = endMonthDate;
       while (curr <= end) {
-        const weekEnd = end < addDays(curr, 6) ? end : addDays(curr, 6);
-        list.push(`${format(curr, 'yyyy-MM-dd')}|${format(weekEnd, 'yyyy-MM-dd')}`);
-        curr = addDays(weekEnd, 1);
+        list.push(format(curr, 'yyyy-MM-dd'));
+        curr = addDays(curr, 7);
       }
     } else if (forecastMode === 'day') {
       let curr = parseISO(dateRange.start);
@@ -225,6 +1077,113 @@ export default function App() {
     return list;
   }, [dateRange, forecastMode]);
 
+  const forecastSummaryRequest = useMemo<ForecastSummaryRequest>(() => {
+    const formulaOverrides: Record<string, string> = {};
+    formulaMap.forEach((formula, registrationId) => {
+      if (formula !== 'CPL') formulaOverrides[registrationId] = formula;
+    });
+    const carryFilters = Object.fromEntries(
+      (Object.entries(columnFilters) as Array<[string, ColumnFilterValue]>)
+        .filter(([key, filter]) => key.startsWith('carry') && filter.selectedValues.length > 0)
+        .map(([key, filter]) => [key, filter.selectedValues])
+    );
+    return {
+      startMonth: dateRange.start.slice(0, 7),
+      endMonth: dateRange.end.slice(0, 7),
+      periods: monthsToShow,
+      granularity: forecastMode === 'week' ? 'week' : 'month',
+      version: selectedVersion,
+      filters: serverRegistrationFilters,
+      formulaFilter: formulaFilter.selectedValues,
+      formulaOverrides,
+      carryFilters,
+    };
+  }, [
+    columnFilters,
+    dateRange.end,
+    dateRange.start,
+    forecastMode,
+    formulaFilter.selectedValues,
+    formulaMap,
+    monthsToShow,
+    selectedVersion,
+    serverRegistrationFilters,
+  ]);
+  const forecastSummaryRequestKey = useMemo(
+    () => JSON.stringify(forecastSummaryRequest),
+    [forecastSummaryRequest]
+  );
+
+  useEffect(() => {
+    if (activeTab !== 'forecast' || monthsToShow.length === 0) return;
+
+    const cacheKey = `${FORECAST_SUMMARY_CACHE_PREFIX}${forecastSummaryRequestKey}`;
+    const cachedRaw = window.localStorage.getItem(cacheKey);
+    let hasUsableCache = false;
+    if (cachedRaw) {
+      try {
+        const cached = JSON.parse(cachedRaw) as {
+          cachedAt: number;
+          summary: ForecastSummary;
+        };
+        if (
+          Date.now() - cached.cachedAt <= FORECAST_SUMMARY_CACHE_TTL_MS &&
+          cached.summary?.periods
+        ) {
+          setForecastSummary(cached.summary);
+          hasUsableCache = true;
+        }
+      } catch {
+        window.localStorage.removeItem(cacheKey);
+      }
+    }
+    if (!hasUsableCache) setForecastSummary(null);
+
+    const controller = new AbortController();
+    setIsForecastSummaryUpdating(true);
+    api.forecast.summary(forecastSummaryRequest, controller.signal)
+      .then(summary => {
+        if (controller.signal.aborted) return;
+        setForecastSummary(summary);
+        window.localStorage.setItem(
+          cacheKey,
+          JSON.stringify({ cachedAt: Date.now(), summary })
+        );
+      })
+      .catch(error => {
+        if (controller.signal.aborted) return;
+        console.error('[forecast summary] refresh failed:', error);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsForecastSummaryUpdating(false);
+      });
+
+    return () => controller.abort();
+  }, [
+    activeTab,
+    forecastSummaryRequest,
+    forecastSummaryRequestKey,
+    monthsToShow.length,
+  ]);
+
+  const displayedForecastSummary = useMemo<ForecastSummary | null>(() => {
+    if (!forecastSummary) return null;
+    const periods = forecastSummary.periods.map(period => ({ ...period }));
+    const periodIndex = new Map(periods.map((period, index) => [period.period, index]));
+
+    (Object.values(pendingForecastEdits) as PendingForecastEdit[]).forEach(edit => {
+      if (edit.version !== selectedVersion) return;
+      const displayPeriod = forecastMode === 'month'
+        ? edit.period.slice(0, 7)
+        : edit.period;
+      const index = periodIndex.get(displayPeriod);
+      if (index === undefined) return;
+      periods[index].qtyFcst += edit.currentValue - edit.baseValue;
+    });
+
+    return { ...forecastSummary, periods };
+  }, [forecastMode, forecastSummary, pendingForecastEdits, selectedVersion]);
+
   const availableForecastModes = isCurrentForecastVersion
     ? (['month', 'week'] as const)
     : (['month'] as const);
@@ -236,109 +1195,604 @@ export default function App() {
       .sort((a, b) => a.month.localeCompare(b.month));
   }, [cplPrices, selectedFy]);
 
-  const handleForecastChange = (regId: string, month: string, value: number) => {
+  const filteredNaphtha = useMemo(() => {
+    const fyStart = `${selectedFy}-04`;
+    const fyEnd = `${selectedFy + 1}-03`;
+    return naphthaprices.filter(c => c.month >= fyStart && c.month <= fyEnd)
+      .sort((a, b) => a.month.localeCompare(b.month));
+  }, [naphthaprices, selectedFy]);
+
+  const filteredBenzene = useMemo(() => {
+    const fyStart = `${selectedFy}-04`;
+    const fyEnd = `${selectedFy + 1}-03`;
+    return benzeneprices.filter(c => c.month >= fyStart && c.month <= fyEnd)
+      .sort((a, b) => a.month.localeCompare(b.month));
+  }, [benzeneprices, selectedFy]);
+
+  const handleForecastChange = useCallback((regId: string, month: string, value: number) => {
+    const editKey = `${regId}|${selectedVersion}|${month}`;
+    const knownIndex = forecastPositionRef.current.get(editKey);
+    const existing = knownIndex === undefined
+      ? undefined
+      : forecastDataRef.current[knownIndex];
+    setPendingForecastEdits(previous => ({
+      ...previous,
+      [editKey]: {
+        registrationId: regId,
+        period: month,
+        version: selectedVersion,
+        baseValue: previous[editKey]?.baseValue ?? existing?.qtyFcst ?? 0,
+        currentValue: value,
+      },
+    }));
     setForecastData(prev => {
-      const index = prev.findIndex(item => 
-        item.registrationId === regId && 
-        item.month === month && 
-        item.version === selectedVersion
-      );
+      const indexedItem = knownIndex === undefined ? undefined : prev[knownIndex];
+      const index = indexedItem &&
+        indexedItem.registrationId === regId &&
+        indexedItem.month === month &&
+        indexedItem.version === selectedVersion
+        ? knownIndex
+        : prev.findIndex(item =>
+            item.registrationId === regId &&
+            item.month === month &&
+            item.version === selectedVersion
+          );
 
       if (index > -1) {
         const newData = [...prev];
         newData[index] = { ...newData[index], qtyFcst: value };
         return newData;
       } else {
+        forecastPositionRef.current.set(editKey, prev.length);
         return [...prev, {
           registrationId: regId,
           month,
           version: selectedVersion,
-          qtyAct: 200,
+          qtyAct: 0,
           qtyFcst: value,
-          priceAct: 1500
+          priceAct: 0,
         }];
       }
     });
-  };
+  }, [selectedVersion]);
 
-  const exportToExcel = () => {
-    const data = registrations.map(reg => {
-      const row: any = { ...reg };
-      monthsToShow.forEach(m => {
-        const { value } = getForecastCellValue(
-          reg,
-          m,
-          selectedVersion,
-          selectedDimension,
-          selectedType,
-          forecastData,
-          cplPrices,
-          forecastMode,
-          planningView
-        );
-        row[m] = value;
-      });
-      return row;
+  const pendingForecastEditList = useMemo(
+    () => Object.values(pendingForecastEdits) as PendingForecastEdit[],
+    [pendingForecastEdits]
+  );
+
+  const inventoryCommitPreviewRows = useMemo<InventoryCommitPreviewRow[]>(() => {
+    const registrationsById = new Map<string, Registration>(
+      registrationsWithInventory.map(registration => [registration.id, registration])
+    );
+    const pendingDeltaByMaterial = new Map<string, number>();
+    pendingForecastEditList.forEach(edit => {
+      const registration = registrationsById.get(edit.registrationId);
+      if (!registration) return;
+      const materialKey = `${registration.plantCode}|${registration.materialCode}`;
+      pendingDeltaByMaterial.set(
+        materialKey,
+        (pendingDeltaByMaterial.get(materialKey) ?? 0) + (edit.currentValue - edit.baseValue)
+      );
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(data);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Forecast");
-    XLSX.writeFile(workbook, `SaleForecast_${selectedVersion}_${format(new Date(), 'yyyyMMdd')}.xlsx`);
+    return pendingForecastEditList.map(edit => {
+      const registration = registrationsById.get(edit.registrationId);
+      const fallbackRegistration: Registration = registration ?? {
+        id: edit.registrationId,
+        ownerName: '',
+        registrationTopic: edit.registrationId,
+        onOffSpec: '',
+        plantCode: '',
+        countryName: '',
+        materialDescription: '',
+        materialCode: '',
+        shipTo_name: '',
+        soldTo_name: '',
+        end_user: '',
+        soldToCode: '',
+        shipToCode: '',
+        group: '',
+        materialNameOnCoa: '',
+        additionalRequirement: '',
+        pic: '',
+        commission: '',
+        productDescription: '',
+        classified: '',
+        commissionIndirect: '',
+        commissionFinancialDiscount: '',
+        newCoaName: '',
+        newTier1: '',
+        newOem: '',
+        packing: '',
+        agreedSpecType: '',
+        wasteScrap: '',
+        forResaleNotApprove: '',
+        imdsDate: '',
+        model: '',
+        createdOn: '',
+        approve: '',
+        partName: '',
+        coaName: '',
+        process: '',
+        application: '',
+        subApp: '',
+        zoneName: '',
+        plantName: '',
+        countryCode: '',
+        endUserCode: '',
+        endUserExportControl: '',
+        endUserName: '',
+        productName: '',
+        column1: '',
+        carryInETD: 0,
+        carryOutETD: 0,
+        carryInLoading: 0,
+        carryOutLoading: 0,
+        priceFormula: 'CPL',
+        spread: 0,
+      };
+      const materialKey = `${fallbackRegistration.plantCode}|${fallbackRegistration.materialCode}`;
+      return {
+        key: `${edit.registrationId}|${edit.version}|${edit.period}`,
+        registration: fallbackRegistration,
+        period: edit.period,
+        baseValue: edit.baseValue,
+        currentValue: edit.currentValue,
+        delta: edit.currentValue - edit.baseValue,
+        pendingMaterialDelta: pendingDeltaByMaterial.get(materialKey) ?? (edit.currentValue - edit.baseValue),
+        inventory: inventoryByMaterialKey.get(materialKey),
+      };
+    });
+  }, [inventoryByMaterialKey, pendingForecastEditList, registrationsWithInventory]);
+
+  const executeCommitForecastUpdates = useCallback(async () => {
+    if (pendingForecastEditList.length === 0 || isSaving) return;
+
+    setIsSaving(true);
+    loadStart();
+    setAppError(null);
+
+    const updates: ForecastValue[] = pendingForecastEditList.map(edit => ({
+      registrationId: edit.registrationId,
+      month: edit.period,
+      version: edit.version,
+      qtyAct: 0,
+      qtyFcst: edit.currentValue,
+      priceAct: 0,
+    }));
+
+    try {
+      setInventoryCommitPreviewOpen(false);
+      await api.forecast.save(
+        updates,
+        authUser?.name || authUser?.email || 'User (Admin)',
+        stampPeriod
+      );
+      setPendingForecastEdits({});
+      setForecastAuditVersion(version => version + 1);
+
+      setIsForecastSummaryUpdating(true);
+      try {
+        const summary = await api.forecast.summary(forecastSummaryRequest);
+        setForecastSummary(summary);
+        window.localStorage.setItem(
+          `${FORECAST_SUMMARY_CACHE_PREFIX}${forecastSummaryRequestKey}`,
+          JSON.stringify({ cachedAt: Date.now(), summary })
+        );
+      } catch (summaryError) {
+        console.error('[forecast summary] refresh after commit failed:', summaryError);
+      }
+    } catch (error) {
+      setAppError(error instanceof ApiError ? error.message : 'Failed to commit forecast updates');
+    } finally {
+      setIsForecastSummaryUpdating(false);
+      setIsSaving(false);
+      loadDone();
+    }
+  }, [
+    forecastSummaryRequest,
+    forecastSummaryRequestKey,
+    authUser,
+    isSaving,
+    loadDone,
+    loadStart,
+    pendingForecastEditList,
+    stampPeriod,
+  ]);
+
+  const handleCommitForecastUpdates = useCallback(async () => {
+    if (pendingForecastEditList.length === 0 || isSaving) return;
+    const pendingRegistrationIds = new Set(
+      pendingForecastEditList.map(edit => edit.registrationId)
+    );
+    const pendingRegistrations = registrationsWithInventory.filter(registration =>
+      pendingRegistrationIds.has(registration.id) &&
+      !inventoryByRegistrationIdRef.current.has(registration.id)
+    );
+    if (pendingRegistrations.length > 0) {
+      loadStart();
+      try {
+        await loadInventoryForRegistrations(pendingRegistrations);
+      } finally {
+        loadDone();
+      }
+    }
+    setInventoryCommitPreviewOpen(true);
+  }, [
+    isSaving,
+    loadDone,
+    loadInventoryForRegistrations,
+    loadStart,
+    pendingForecastEditList,
+    registrationsWithInventory,
+  ]);
+
+  const handleCreateManagedRegistration = useCallback(async (registration: Registration) => {
+    loadStart();
+    try {
+      const saved = await api.registrations.create(registration);
+      setManagedRegistrations(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
+      setRegistrations(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
+      setFormulaMap(previous =>
+        new Map(previous).set(
+          saved.id,
+          (saved.priceFormula || 'CPL') as PriceFormula
+        )
+      );
+      void loadInventoryForRegistrations([saved]);
+      return saved;
+    } finally {
+      loadDone();
+    }
+  }, [loadDone, loadInventoryForRegistrations, loadStart]);
+
+  const handleUpdateManagedRegistration = useCallback(async (registration: Registration) => {
+    loadStart();
+    try {
+      const saved = await api.registrations.update(registration);
+      setManagedRegistrations(previous =>
+        previous.map(item => item.id === saved.id ? saved : item)
+      );
+      setRegistrations(previous =>
+        previous.map(item => item.id === saved.id ? saved : item)
+      );
+      setFormulaMap(previous =>
+        new Map(previous).set(
+          saved.id,
+          (saved.priceFormula || 'CPL') as PriceFormula
+        )
+      );
+      inventoryByRegistrationIdRef.current.delete(saved.id);
+      setInventoryByRegistrationId(previous => {
+        const next = new Map(previous);
+        next.delete(saved.id);
+        inventoryByRegistrationIdRef.current = next;
+        mergedRegistrationCacheRef.current.delete(saved.id);
+        return next;
+      });
+      void loadInventoryForRegistrations([saved]);
+      return saved;
+    } finally {
+      loadDone();
+    }
+  }, [loadDone, loadInventoryForRegistrations, loadStart]);
+
+  const handleDeleteManagedRegistration = useCallback(async (registrationId: string) => {
+    loadStart();
+    try {
+      await api.registrations.remove(registrationId);
+      setManagedRegistrations(previous =>
+        previous.filter(registration => registration.id !== registrationId)
+      );
+      setRegistrations(previous =>
+        previous.filter(registration => registration.id !== registrationId)
+      );
+      setForecastData(previous =>
+        previous.filter(item => item.registrationId !== registrationId)
+      );
+      setPendingForecastEdits(previous => Object.fromEntries(
+        (Object.entries(previous) as Array<[string, PendingForecastEdit]>)
+          .filter(([, edit]) => edit.registrationId !== registrationId)
+      ) as Record<string, PendingForecastEdit>);
+      setFormulaMap(previous => {
+        const next = new Map(previous);
+        next.delete(registrationId);
+        return next;
+      });
+      setFixedPriceMap(previous => {
+        const next = new Map(previous);
+        next.delete(registrationId);
+        return next;
+      });
+      setInventoryByRegistrationId(previous => {
+        const next = new Map(previous);
+        next.delete(registrationId);
+        inventoryByRegistrationIdRef.current = next;
+        mergedRegistrationCacheRef.current.delete(registrationId);
+        return next;
+      });
+    } finally {
+      loadDone();
+    }
+  }, [loadDone, loadStart]);
+
+  const handleCurrentForecastImportComplete = useCallback(async () => {
+    const registrationIds = registrations.map(registration => registration.id);
+    if (registrationIds.length === 0) return;
+    loadStart();
+    try {
+      const forecasts = await api.forecast.list({
+        version: 'Current Forecast',
+        registrationIds,
+      });
+      mergeLoadedForecastData(
+        forecasts,
+        [],
+        versions.length > 0 ? versions : ['Current Forecast']
+      );
+      setForecastAuditVersion(version => version + 1);
+    } finally {
+      loadDone();
+    }
+  }, [loadDone, loadStart, mergeLoadedForecastData, registrations, versions]);
+
+  const exportToExcel = async () => {
+    loadStart();
+    try {
+      const XLSX = await import('xlsx');
+      const data = registrations.map(reg => {
+        const row: any = { ...reg };
+        monthsToShow.forEach(m => {
+          const { value } = getForecastCellValue(
+            reg,
+            m,
+            selectedVersion,
+            selectedDimension,
+            selectedType,
+            forecastData,
+            cplPrices,
+            forecastMode,
+            planningView
+          );
+          row[m] = value;
+        });
+        return row;
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(data);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Forecast");
+      XLSX.writeFile(workbook, `SaleForecast_${selectedVersion}_${format(new Date(), 'yyyyMMdd')}.xlsx`);
+    } finally {
+      loadDone();
+    }
   };
+
+  const selectZeroPriceInput = (event: React.FocusEvent<HTMLInputElement>) => {
+    if (Number(event.currentTarget.value) === 0) event.currentTarget.select();
+  };
+
+  const keepZeroPriceSelected = (event: React.MouseEvent<HTMLInputElement>) => {
+    if (Number(event.currentTarget.value) !== 0) return;
+    event.preventDefault();
+    event.currentTarget.select();
+  };
+
+  const displayUserName = authUser?.name || authUser?.email || 'User';
+  const userInitials = displayUserName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(part => part[0]?.toUpperCase())
+    .join('') || 'U';
+
+  if (isAuthLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#F8FAFC] text-slate-500">
+        <div className="rounded-lg border border-slate-200 bg-white px-5 py-4 text-xs font-bold uppercase tracking-wider shadow-sm">
+          Checking sign-in...
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-[#F8FAFC] text-slate-800 font-sans overflow-hidden">
       {/* Top Branding Bar */}
-      <nav className="h-12 bg-slate-900 flex items-center justify-between px-6 shrink-0 z-50">
-        <div className="flex items-center gap-6">
+      <nav className="h-14 bg-[#007ABE] flex items-center justify-between px-5 shrink-0 z-50 shadow-sm">
+        <div className="flex min-w-0 items-center gap-5">
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 bg-blue-500 rounded flex items-center justify-center text-white text-[10px] font-black">SN</div>
-            <span className="text-white font-bold tracking-tight text-base uppercase">Sales<span className="text-blue-400">Nexus</span> <span className="text-[10px] opacity-50 ml-1">v2.0</span></span>
+            <div className="flex h-8 w-[56px] shrink-0 items-center justify-center rounded-md bg-white shadow-sm" aria-label="UBE">
+              <svg viewBox="0 0 120 42" className="h-7 w-[52px]" role="img" aria-hidden="true">
+                <text
+                  x="57"
+                  y="31"
+                  fill="#2F86C5"
+                  fontFamily="Arial Black, Arial, sans-serif"
+                  fontSize="34"
+                  fontStyle="italic"
+                  fontWeight="900"
+                  letterSpacing="-4"
+                  textAnchor="middle"
+                >
+                  UBE
+                </text>
+              </svg>
+            </div>
+            <span className="text-white font-bold tracking-tight text-base uppercase whitespace-nowrap">SalesNexus</span>
           </div>
-          <div className="h-4 w-[1px] bg-slate-700"></div>
-          <div className="flex gap-4">
-            <button 
-              onClick={() => setActiveTab('forecast')}
+          <div className="h-5 w-[1px] bg-white/25"></div>
+          <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto py-1">
+            <button
+              onClick={() => { flash(); setActiveTab('forecast'); }}
               className={cn(
-                "text-[10px] font-bold uppercase tracking-wider transition-all pb-1",
-                activeTab === 'forecast' ? "text-blue-300 border-b border-blue-400" : "text-slate-400 hover:text-white"
+                "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-all",
+                activeTab === 'forecast' ? "bg-white text-[#007ABE] shadow-sm" : "text-blue-50 hover:bg-white/10 hover:text-white"
               )}
             >
+              <FileSpreadsheet size={14} />
               Sales Forecast
             </button>
             <button 
-              onClick={() => setActiveTab('master')}
+              onClick={() => { flash(); setActiveTab('master'); }}
               className={cn(
-                "text-[10px] font-bold uppercase tracking-wider transition-all pb-1",
-                activeTab === 'master' ? "text-blue-300 border-b border-blue-400" : "text-slate-400 hover:text-white"
+                "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-all",
+                activeTab === 'master' ? "bg-white text-[#007ABE] shadow-sm" : "text-blue-50 hover:bg-white/10 hover:text-white"
               )}
             >
-              CPL Management
+              <Settings size={14} />
+              Price Management
             </button>
             <button 
-              onClick={() => setActiveTab('dashboard')}
+              onClick={() => { flash(); setActiveTab('dashboard'); }}
               className={cn(
-                "text-[10px] font-bold uppercase tracking-wider transition-all pb-1",
-                activeTab === 'dashboard' ? "text-blue-300 border-b border-blue-400" : "text-slate-400 hover:text-white"
+                "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-all",
+                activeTab === 'dashboard' ? "bg-white text-[#007ABE] shadow-sm" : "text-blue-50 hover:bg-white/10 hover:text-white"
               )}
             >
+              <BarChart3 size={14} />
               Analytics
+            </button>
+            <button
+              onClick={() => { flash(); setActiveTab('pdc'); }}
+              className={cn(
+                "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-all",
+                activeTab === 'pdc' ? "bg-white text-[#007ABE] shadow-sm" : "text-blue-50 hover:bg-white/10 hover:text-white"
+              )}
+            >
+              <PieIcon size={14} />
+              PDC Summary
+            </button>
+            <button
+              onClick={() => { flash(); setActiveTab('mtp'); }}
+              className={cn(
+                "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-all",
+                activeTab === 'mtp' ? "bg-white text-[#007ABE] shadow-sm" : "text-blue-50 hover:bg-white/10 hover:text-white"
+              )}
+            >
+              <Calendar size={14} />
+              MTP Budget
+            </button>
+            <button
+              onClick={() => { flash(); setActiveTab('yearly'); }}
+              className={cn(
+                "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-all",
+                activeTab === 'yearly' ? "bg-white text-[#007ABE] shadow-sm" : "text-blue-50 hover:bg-white/10 hover:text-white"
+              )}
+            >
+              <Layers size={14} />
+              Yearly Budget
             </button>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div ref={accountMenuRef} className="relative flex items-center gap-3">
           <div className="text-right mr-2">
-            <p className="text-[8px] text-slate-500 leading-none uppercase font-bold">Authenticated as</p>
-            <p className="text-[10px] text-white font-semibold">User (Admin)</p>
+            <p className="text-[8px] text-blue-100/90 leading-none uppercase font-bold tracking-wide">Authenticated as</p>
+            <p className="text-[10px] text-white font-semibold">{displayUserName}</p>
           </div>
-          <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold shadow-inner">CW</div>
+          <button
+            type="button"
+            onClick={() => setIsAccountMenuOpen(open => !open)}
+            className="flex w-8 h-8 rounded-full bg-blue-600 items-center justify-center text-white text-[10px] font-bold shadow-inner ring-2 ring-white/15 transition hover:ring-white/45 focus:outline-none focus:ring-white"
+            aria-label="Open account menu"
+            aria-expanded={isAccountMenuOpen}
+          >
+            {userInitials}
+          </button>
+
+          {isAccountMenuOpen && (
+            <div className="absolute right-0 top-11 z-[90] w-80 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 shadow-2xl">
+              <div className="flex items-center justify-between border-b border-slate-200 bg-slate-200/80 px-4 py-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-black text-white shadow-inner">
+                    {userInitials}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-bold text-slate-800">{displayUserName}</p>
+                    <p className="truncate text-xs font-medium text-slate-500">{authUser?.email || 'Signed in'}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAccountMenuOpen(false)}
+                  className="rounded-full p-1.5 text-slate-500 transition hover:bg-white hover:text-slate-800"
+                  aria-label="Close account menu"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-3">
+                <div className="rounded-2xl bg-white p-3 shadow-sm">
+                  <div className="mb-3 flex items-center gap-3 rounded-xl bg-slate-50 p-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-black text-white">
+                      {userInitials}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-bold text-slate-800">{displayUserName}</p>
+                      <p className="truncate text-xs text-slate-500">{authUser?.email || 'Local session'}</p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-left text-sm font-bold text-slate-700 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                  >
+                    <LogOut size={18} />
+                    Log out
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </nav>
 
+      {appError && (
+        <div className="bg-red-50 border-b border-red-200 px-6 py-2 flex items-center justify-between shrink-0 z-50">
+          <span className="text-red-600 text-xs font-bold">{appError}</span>
+          <button onClick={() => setAppError(null)} className="text-red-400 hover:text-red-600 text-xs ml-4 font-bold">✕ Dismiss</button>
+        </div>
+      )}
+
       {/* Filter Area (Header) */}
       {activeTab === 'forecast' && (
-        <header className="h-[115px] bg-white border-b border-slate-200 pt-5 pb-3 px-4 flex flex-col justify-center shrink-0 shadow-sm z-40">
+        <header
+          className={cn(
+            "relative bg-white border-b border-slate-200 shrink-0 z-40 overflow-visible",
+            isForecastHeaderCollapsed ? "h-3" : "h-[115px] shadow-sm"
+          )}
+        >
+          <button
+            type="button"
+            onClick={() => setIsForecastHeaderCollapsed(prev => !prev)}
+            className={cn(
+              "absolute left-1/2 z-50 h-8 w-8 -translate-x-1/2 rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm flex items-center justify-center transition-[color,border-color,background-color,transform] duration-150 will-change-transform",
+              isForecastHeaderCollapsed
+                ? "bottom-[-18px] hover:bg-white hover:text-blue-600 hover:border-blue-200"
+                : "bottom-1 hover:bg-slate-50 hover:text-slate-900 hover:border-slate-300"
+            )}
+            title={isForecastHeaderCollapsed ? "Show filter bar" : "Hide filter bar"}
+            aria-label={isForecastHeaderCollapsed ? "Show filter bar" : "Hide filter bar"}
+          >
+            <ChevronRight
+              size={16}
+              className={cn(
+                "transition-transform duration-150",
+                isForecastHeaderCollapsed ? "rotate-90" : "-rotate-90"
+              )}
+            />
+          </button>
+          <div
+            className={cn(
+              "h-[115px] px-4 pt-5 pb-3 flex flex-col justify-center transition-[opacity,transform] duration-200 ease-in-out",
+              isForecastHeaderCollapsed
+                ? "pointer-events-none -translate-y-2 opacity-0"
+                : "translate-y-0 opacity-100"
+            )}
+          >
           <div className="grid grid-cols-7 gap-6 max-w-[1400px] items-center">
             <div className="col-span-2">
               <FilterGroup
@@ -349,7 +1803,7 @@ export default function App() {
                       <button
                         key={mode}
                         type="button"
-                        onClick={() => handleForecastModeChange(mode)}
+                        onClick={() => { flash(); handleForecastModeChange(mode); }}
                         className={cn(
                           "rounded-full px-2 py-1 transition-all",
                           forecastMode === mode
@@ -364,75 +1818,81 @@ export default function App() {
                 }
               >
                 <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <input 
-                    ref={startVisibleRef}
-                    type={forecastMode === 'month' ? 'month' : 'text'}
-                    value={forecastMode === 'month' ? dateRange.start : formatDayModeValue(dateRange.start)} 
-                    onChange={e => {
-                      if (forecastMode === 'month') {
-                        setDateRange(prev => ({ ...prev, start: e.target.value }));
-                      } else if (forecastMode === 'week' || forecastMode === 'day') {
-                        const parsed = parseDayModeValue(e.target.value);
+                {forecastMode === 'month' ? (
+                  <MonthYearPicker
+                    value={dateRange.start}
+                    onChange={start => setDateRange(previous => ({ ...previous, start }))}
+                    ariaLabel="Select start month and year"
+                  />
+                ) : (
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={formatDayModeValue(dateRange.start)}
+                      onChange={event => {
+                        const parsed = parseDayModeValue(event.target.value);
                         if (parsed !== null) {
-                          setDateRange(prev => ({ ...prev, start: parsed }));
+                          setDateRange(previous => ({ ...previous, start: parsed }));
                         }
-                      }
-                    }}
-                    className="w-full pr-12 text-xs border border-slate-200 rounded p-1.5 bg-slate-50 focus:border-blue-400 outline-none transition-all appearance-none calendar-month-input" 
-                  />
-                  <input
-                    ref={startDatePickerRef}
-                    type="date"
-                    value={forecastMode !== 'month' ? dateRange.start : ''}
-                    onChange={e => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-                    className="absolute left-0 top-0 w-0 h-0 opacity-0 pointer-events-none"
-                    aria-hidden="true"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => openDatePicker(forecastMode === 'month' ? startVisibleRef.current : startDatePickerRef.current)}
-                    className="absolute inset-y-0 right-1.5 flex items-center justify-center text-slate-500 hover:text-blue-600 transition-colors"
-                    aria-label="Open start month picker"
-                  >
-                    <Calendar size={14} />
-                  </button>
-                </div>
+                      }}
+                      className="w-full rounded border border-slate-200 bg-slate-50 p-1.5 pr-8 text-xs outline-none transition-all focus:border-blue-400"
+                    />
+                    <input
+                      ref={startDatePickerRef}
+                      type="date"
+                      value={dateRange.start}
+                      onChange={event => setDateRange(previous => ({ ...previous, start: event.target.value }))}
+                      className="pointer-events-none absolute left-0 top-0 h-0 w-0 opacity-0"
+                      aria-hidden="true"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => openDatePicker(startDatePickerRef.current)}
+                      className="absolute inset-y-0 right-1.5 flex items-center justify-center text-slate-500 transition-colors hover:text-blue-600"
+                      aria-label="Open start date picker"
+                    >
+                      <Calendar size={14} />
+                    </button>
+                  </div>
+                )}
                 <span className="text-slate-300 text-[10px]">TO</span>
-                <div className="relative flex-1">
-                  <input 
-                    ref={endVisibleRef}
-                    type={forecastMode === 'month' ? 'month' : 'text'}
-                    value={forecastMode === 'month' ? dateRange.end : formatDayModeValue(dateRange.end)} 
-                    onChange={e => {
-                      if (forecastMode === 'month') {
-                        setDateRange(prev => ({ ...prev, end: e.target.value }));
-                      } else if (forecastMode === 'week' || forecastMode === 'day') {
-                        const parsed = parseDayModeValue(e.target.value);
+                {forecastMode === 'month' ? (
+                  <MonthYearPicker
+                    value={dateRange.end}
+                    onChange={end => setDateRange(previous => ({ ...previous, end }))}
+                    ariaLabel="Select end month and year"
+                  />
+                ) : (
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={formatDayModeValue(dateRange.end)}
+                      onChange={event => {
+                        const parsed = parseDayModeValue(event.target.value);
                         if (parsed !== null) {
-                          setDateRange(prev => ({ ...prev, end: parsed }));
+                          setDateRange(previous => ({ ...previous, end: parsed }));
                         }
-                      }
-                    }}
-                    className="w-full pr-12 text-xs border border-slate-200 rounded p-1.5 bg-slate-50 focus:border-blue-400 outline-none transition-all appearance-none calendar-month-input" 
-                  />
-                  <input
-                    ref={endDatePickerRef}
-                    type="date"
-                    value={forecastMode !== 'month' ? dateRange.end : ''}
-                    onChange={e => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-                    className="absolute left-0 top-0 w-0 h-0 opacity-0 pointer-events-none"
-                    aria-hidden="true"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => openDatePicker(forecastMode === 'month' ? endVisibleRef.current : endDatePickerRef.current)}
-                    className="absolute inset-y-0 right-1.5 flex items-center justify-center text-slate-500 hover:text-blue-600 transition-colors"
-                    aria-label="Open end month picker"
-                  >
-                    <Calendar size={14} />
-                  </button>
-                </div>
+                      }}
+                      className="w-full rounded border border-slate-200 bg-slate-50 p-1.5 pr-8 text-xs outline-none transition-all focus:border-blue-400"
+                    />
+                    <input
+                      ref={endDatePickerRef}
+                      type="date"
+                      value={dateRange.end}
+                      onChange={event => setDateRange(previous => ({ ...previous, end: event.target.value }))}
+                      className="pointer-events-none absolute left-0 top-0 h-0 w-0 opacity-0"
+                      aria-hidden="true"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => openDatePicker(endDatePickerRef.current)}
+                      className="absolute inset-y-0 right-1.5 flex items-center justify-center text-slate-500 transition-colors hover:text-blue-600"
+                      aria-label="Open end date picker"
+                    >
+                      <Calendar size={14} />
+                    </button>
+                  </div>
+                )}
                 </div>
               </FilterGroup>
             </div>
@@ -442,7 +1902,7 @@ export default function App() {
                 {(['Qty', 'Price', 'Amount'] as Dimension[]).map(d => (
                   <button 
                     key={d}
-                    onClick={() => setSelectedDimension(d)}
+                    onClick={() => { flash(); setSelectedDimension(d); }}
                     className={cn(
                       "flex-1 text-[10px] py-1 rounded transition-all font-bold uppercase",
                       selectedDimension === d ? "bg-white shadow-sm text-blue-600" : "text-slate-500 hover:text-slate-700"
@@ -459,7 +1919,7 @@ export default function App() {
                 {(['Act', 'Fcst', 'Act-Fcst'] as ValueType[]).map(t => (
                   <button 
                     key={t}
-                    onClick={() => setSelectedType(t)}
+                    onClick={() => { flash(); setSelectedType(t); }}
                     className={cn(
                       "flex-1 text-[10px] py-1 rounded transition-all font-bold uppercase",
                       selectedType === t ? "bg-white shadow-sm text-blue-600" : "text-slate-500 hover:text-slate-700"
@@ -476,8 +1936,8 @@ export default function App() {
                     <div className="relative flex-1 min-w-0">
                       <select 
                         value={selectedVersion} 
-                        onChange={e => setSelectedVersion(e.target.value)}
-                        className="w-full text-xs border border-blue-200 rounded p-1.5 bg-blue-50 text-blue-700 font-bold outline-none appearance-none pr-8 transition-all focus:ring-2 focus:ring-blue-100"
+                        onChange={e => { flash(); setSelectedVersion(e.target.value); }}
+                        className="sf-select w-full text-xs border rounded p-1.5 outline-none appearance-none pr-8 transition-colors"
                       >
                         {versions.map(v => <option key={v}>{v}</option>)}
                       </select>
@@ -522,12 +1982,21 @@ export default function App() {
                           />
                           <div className="flex gap-2">
                             <button 
-                              onClick={() => {
+                              onClick={async () => {
                                 if (newVersionName && !versions.includes(newVersionName)) {
-                                  setVersions(prev => [...prev, newVersionName]);
-                                  setSelectedVersion(newVersionName);
-                                  setNewVersionName('');
-                                  setIsAddingVersion(false);
+                                  try {
+                                    loadStart();
+                                    await api.versions.create(newVersionName);
+                                    setVersions(prev => [...prev, newVersionName]);
+                                    setSelectedVersion(newVersionName);
+                                    setNewVersionName('');
+                                    setIsAddingVersion(false);
+                                  } catch (err) {
+                                    const msg = err instanceof ApiError ? err.message : 'Failed to create version';
+                                    setAppError(msg);
+                                  } finally {
+                                    loadDone();
+                                  }
                                 }
                               }}
                               className="flex-1 bg-blue-600 text-white text-[10px] font-bold py-2 rounded-lg"
@@ -576,7 +2045,7 @@ export default function App() {
                                   
                                   // Update selected version
                                   setSelectedVersion(newName);
-                                  
+                                  flash();
                                   setIsEditingVersion(false);
                                 } else if (editingVersionName === selectedVersion) {
                                   setIsEditingVersion(false);
@@ -606,10 +2075,10 @@ export default function App() {
                   <div className="relative">
                     <select
                       value={stampPeriod}
-                      onChange={e => setStampPeriod(e.target.value)}
-                      className="w-full text-xs border border-blue-200 rounded p-1.5 bg-blue-50 text-blue-700 font-bold outline-none appearance-none pr-8 transition-all focus:ring-2 focus:ring-blue-100"
+                      onChange={e => { flash(); setStampPeriod(e.target.value); }}
+                      className="sf-select w-full text-xs border rounded p-1.5 outline-none appearance-none pr-8 transition-colors"
                     >
-                      {['No', 'Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5', 'Month 1', 'Month 2'].map(option => (
+                      {STAMP_PERIOD_OPTIONS.map(option => (
                         <option key={option} value={option}>{option}</option>
                       ))}
                     </select>
@@ -623,8 +2092,8 @@ export default function App() {
                   <div className="relative">
                     <select
                       value={planningView}
-                      onChange={e => setPlanningView(e.target.value as 'sale' | 'accounting' | 'production')}
-                      className="w-full text-xs border border-blue-200 rounded p-1.5 bg-blue-50 text-blue-700 font-bold outline-none appearance-none pr-8 transition-all focus:ring-2 focus:ring-blue-100"
+                      onChange={e => { flash(); setPlanningView(e.target.value as 'sale' | 'accounting' | 'production'); }}
+                      className="sf-select w-full text-xs border rounded p-1.5 outline-none appearance-none pr-8 transition-colors"
                     >
                       <option value="sale">Sale Input</option>
                       <option value="accounting">Accounting</option>
@@ -647,6 +2116,7 @@ export default function App() {
               )}
             </div>
           </div>
+          </div>
         </header>
       )}
 
@@ -658,8 +2128,8 @@ export default function App() {
                 <div className="relative">
                   <select 
                     value={selectedFy} 
-                    onChange={e => setSelectedFy(Number(e.target.value))}
-                    className="w-64 text-xs border border-blue-200 rounded p-1.5 bg-blue-50 text-blue-700 font-bold outline-none appearance-none pr-8 transition-all focus:ring-2 focus:ring-blue-100 shadow-sm"
+                    onChange={e => { flash(); setSelectedFy(Number(e.target.value)); }}
+                    className="sf-select w-64 text-xs border rounded p-1.5 outline-none appearance-none pr-8 transition-colors shadow-sm"
                   >
                     {[2024, 2025, 2026, 2027, 2028].map(y => (
                       <option key={y} value={y}>FY {String(y).slice(-2)} ({y}-04 ถึง {y+1}-03)</option>
@@ -672,7 +2142,7 @@ export default function App() {
               </FilterGroup>
               
               <div className="flex flex-col justify-end pb-[2px]">
-                <h2 className="text-sm font-bold text-slate-700 tracking-tight">CPL Base Price Management</h2>
+                <h2 className="text-sm font-bold text-slate-700 tracking-tight">Price Management</h2>
                 <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest">Global Master Data Management</p>
               </div>
             </div>
@@ -686,7 +2156,8 @@ export default function App() {
                 Add Month to FY{String(selectedFy).slice(-2)}
               </button>
               <button 
-                onClick={() => {
+                onClick={async () => {
+                  const XLSX = await import('xlsx');
                   const worksheet = XLSX.utils.json_to_sheet(filteredCplPrices);
                   const workbook = XLSX.utils.book_new();
                   XLSX.utils.book_append_sheet(workbook, worksheet, `CPL_FY${String(selectedFy).slice(-2)}`);
@@ -704,79 +2175,13 @@ export default function App() {
 
       {/* Main Body */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <aside className="w-52 bg-slate-50 border-r border-slate-200 flex flex-col shrink-0 z-30">
-          <div className="p-4 flex-1 overflow-y-auto">
-            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Main Outputs</h3>
-            <div className="space-y-1">
-              <SideNavItem 
-                active={activeTab === 'forecast'} 
-                label="Sales Forecast Input" 
-                onClick={() => setActiveTab('forecast')} 
-                icon={<FileSpreadsheet size={14} />}
-              />
-              <SideNavItem 
-                active={activeTab === 'weekly'}
-                label="Weekly Sale Report" 
-                onClick={() => setActiveTab('weekly')} 
-                icon={<BarChart size={14} />}
-              />
-              <SideNavItem 
-                active={activeTab === 'monthly'}
-                label="Monthly Sale Report" 
-                onClick={() => setActiveTab('monthly')} 
-                icon={<TrendingUp size={14} />}
-              />
-              <SideNavItem 
-                active={activeTab === 'yearly'}
-                label="Yearly Budget (BB)" 
-                onClick={() => setActiveTab('yearly')} 
-                icon={<Layers size={14} />}
-              />
-              <SideNavItem 
-                active={activeTab === 'mtp'}
-                label="MTP Budget (3Yr)" 
-                onClick={() => setActiveTab('mtp')} 
-                icon={<Calendar size={14} />}
-              />
-              <SideNavItem 
-                active={activeTab === 'pdc'}
-                label="PDC Summary" 
-                onClick={() => setActiveTab('pdc')} 
-                icon={<PieIcon size={14} />}
-              />
-            </div>
-
-            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-8 mb-4">Planning (P2)</h3>
-            <div className="space-y-1">
-              <SideNavItem 
-                active={activeTab === 'inventory'}
-                label="Inventory for Sale" 
-                onClick={() => setActiveTab('inventory')} 
-                icon={<Box size={14} />}
-              />
-              <SideNavItem 
-                active={activeTab === 'suggestion'}
-                label="Prod Suggestion" 
-                onClick={() => setActiveTab('suggestion')} 
-                icon={<Truck size={14} />}
-              />
-            </div>
-          </div>
-
-          <div className="p-4 border-t border-slate-200">
-            <div className="bg-slate-900 rounded-lg p-3 shadow-inner">
-              <p className="text-[8px] text-slate-500 uppercase font-black mb-1">System Status</p>
-              <div className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-                <p className="text-[10px] text-green-400 font-mono tracking-tighter">SQL_LIVE_READY</p>
-              </div>
-            </div>
-          </div>
-        </aside>
-
         {/* Content Area */}
         <main className="flex-1 bg-white flex flex-col overflow-hidden relative">
+          {isLoading && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-white/90 backdrop-blur-sm">
+              <div className="text-slate-500 text-sm font-bold animate-pulse tracking-widest uppercase">Loading from server…</div>
+            </div>
+          )}
           <AnimatePresence mode="wait">
             {activeTab === 'forecast' && (
               <motion.div 
@@ -787,8 +2192,8 @@ export default function App() {
                 className="flex-1 flex flex-col overflow-hidden"
               >
                 <ForecastInputTable
-                  registrations={filteredRegistrations}
-                  allRegistrations={registrations}
+                  registrations={displayedRegistrations}
+                  allRegistrations={allDisplayedRegistrations}
                   columnFilters={columnFilters}
                   onColumnFiltersChange={setColumnFilters}
                   monthsToShow={monthsToShow}
@@ -801,41 +2206,83 @@ export default function App() {
                   onExport={exportToExcel}
                   forecastMode={forecastMode}
                   planningView={planningView}
+                  formulaMap={formulaMap}
+                  onFormulaChange={handleFormulaChange}
+                  formulaFilter={formulaFilter}
+                  onFormulaFilterChange={setFormulaFilter}
+                  naphthaprices={naphthaprices}
+                  benzeneprices={benzeneprices}
+                  fixedPriceMap={fixedPriceMap}
+                  onFixedPriceChange={handleFixedPriceChange}
+                  isTableDataLoading={isTableDataLoading}
+                  isLoadingMore={isLoadingMore}
+                  hasMoreRows={hasMoreRegistrations}
+                  onLoadMore={loadMoreRegistrations}
+                  loadFilterOptions={loadFilterOptions}
+                  managedRegistrations={managedRegistrations}
+                  onCreateManagedRegistration={handleCreateManagedRegistration}
+                  onUpdateManagedRegistration={handleUpdateManagedRegistration}
+                  onDeleteManagedRegistration={handleDeleteManagedRegistration}
+                  onImportComplete={handleCurrentForecastImportComplete}
+                  forecastSummary={displayedForecastSummary}
+                  isForecastSummaryUpdating={isForecastSummaryUpdating}
+                  forecastAuditVersion={forecastAuditVersion}
+                  stampPeriod={stampPeriod}
+                />
+
+                <InventoryCommitPreviewModal
+                  open={inventoryCommitPreviewOpen}
+                  rows={inventoryCommitPreviewRows}
+                  isSaving={isSaving}
+                  isInventoryLoading={isInventoryLoading}
+                  onClose={() => setInventoryCommitPreviewOpen(false)}
+                  onConfirm={() => void executeCommitForecastUpdates()}
                 />
 
                 {/* Bottom Status Bar */}
                 <div className="h-10 border-t border-slate-200 bg-slate-50 px-6 flex items-center justify-between shrink-0">
-                  <div className="flex items-center gap-6">
-                    <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></div>
-                      <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Input Mode (Qty/Fcst)</span>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className={cn(
+                      "h-1.5 w-1.5 shrink-0 rounded-full",
+                      snapshotStatus?.status === 'failed' ? "bg-amber-400" : "bg-green-500",
+                      snapshotStatus?.status === 'syncing' && "animate-pulse"
+                    )} />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[8px] font-black uppercase tracking-widest text-slate-400">System Status</span>
+                        <span className="font-mono text-[9px] font-bold uppercase tracking-tight text-slate-500">
+                          {snapshotStatus?.status === 'syncing'
+                            ? 'SYNCING_SOURCE'
+                            : snapshotStatus?.status === 'failed'
+                              ? 'SOURCE_SYNC_FAILED'
+                              : 'LOCAL_DATA_READY'}
+                        </span>
+                      </div>
+                      <p className="truncate text-[8px] text-slate-400">
+                        {snapshotStatus?.completedAt
+                          ? `Updated ${new Date(snapshotStatus.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                          : 'Preparing local data'}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 rounded-full bg-slate-300"></div>
-                      <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Reference (Actual/Formula)</span>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleRefreshSnapshot()}
+                      disabled={isRefreshingSnapshot || snapshotStatus?.status === 'syncing'}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 transition-colors hover:border-blue-200 hover:text-[#007ABE] disabled:cursor-wait disabled:opacity-50"
+                      title="Refresh source data now"
+                      aria-label="Refresh source data now"
+                    >
+                      <RefreshCw size={13} className={isRefreshingSnapshot ? "animate-spin" : ""} />
+                    </button>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span className="text-[10px] text-slate-400 font-serif italic">Pending Changes: {forecastData.filter(f => f.qtyFcst > 0).length} units</span>
+                    <span className="text-[10px] text-slate-400 font-serif italic">Pending Changes: {pendingForecastEditList.length} units</span>
                     <button 
-                      onClick={() => {
-                        const btn = document.activeElement as HTMLButtonElement;
-                        const originalText = btn.innerText;
-                        btn.innerText = 'COMMITTING...';
-                        btn.disabled = true;
-                        setTimeout(() => {
-                          btn.innerText = '✅ UPDATED SUCCESSFULLY';
-                          btn.classList.replace('bg-green-600', 'bg-blue-600');
-                          setTimeout(() => {
-                            btn.innerText = originalText;
-                            btn.classList.replace('bg-blue-600', 'bg-green-600');
-                            btn.disabled = false;
-                          }, 2000);
-                        }, 1000);
-                      }}
+                      onClick={handleCommitForecastUpdates}
+                      disabled={isSaving || pendingForecastEditList.length === 0}
                       className="bg-green-600 hover:bg-green-700 text-white text-[10px] font-bold px-4 py-1.5 rounded shadow-sm hover:shadow-md transition-all active:scale-95 uppercase tracking-wider disabled:opacity-50"
                     >
-                      Commit Updates
+                      {isSaving ? 'Committing...' : 'Commit Updates'}
                     </button>
                   </div>
                 </div>
@@ -851,13 +2298,15 @@ export default function App() {
                 className="flex-1 flex flex-col overflow-hidden"
               >
                 <div ref={cplTableRef} className="flex-1 overflow-auto">
-                  <table className="w-full border-collapse table-fixed min-w-[800px]">
+                  <table className="w-full border-collapse table-fixed min-w-[1100px]">
                     <thead className="sticky top-0 z-20 bg-slate-100">
                       <tr className="divide-x divide-slate-200">
-                        <th className="w-1/4 p-4 text-[10px] font-black uppercase text-slate-400 text-left">Accounting Period</th>
-                        <th className="w-1/4 p-4 text-[10px] font-black uppercase text-slate-400 text-left uppercase">Period Description</th>
-                        <th className="w-1/4 p-4 text-[10px] font-black uppercase text-slate-400 text-right uppercase tracking-widest">Standard CPL Base Price (USD)</th>
-                        <th className="w-1/4 p-4 text-[10px] font-black uppercase text-slate-400 text-center uppercase tracking-widest">Actions</th>
+                        <th className="w-[12%] p-4 text-[10px] font-black uppercase text-slate-400 text-left">Month</th>
+                        <th className="w-[18%] p-4 text-[10px] font-black uppercase text-slate-400 text-left">Period Description</th>
+                        <th className="w-[20%] p-4 text-[10px] font-black uppercase text-slate-400 text-right tracking-widest">CPL (USD/Ton)</th>
+                        <th className="w-[20%] p-4 text-[10px] font-black uppercase text-slate-400 text-right tracking-widest">Naphtha (USD/Ton)</th>
+                        <th className="w-[20%] p-4 text-[10px] font-black uppercase text-slate-400 text-right tracking-widest">Benzene (USD/Ton)</th>
+                        <th className="w-[10%] p-4 text-[10px] font-black uppercase text-slate-400 text-center tracking-widest">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-xs font-semibold">
@@ -868,9 +2317,11 @@ export default function App() {
                           <td className="p-4 bg-blue-50/10">
                             <div className="flex items-center justify-end gap-2">
                               <span className="text-slate-300">$</span>
-                              <input 
-                                type="number" 
+                              <input
+                                type="number"
                                 value={cpl.price}
+                                onFocus={selectZeroPriceInput}
+                                onMouseUp={keepZeroPriceSelected}
                                 onChange={e => {
                                   const val = Number(e.target.value);
                                   setCplPrices(prev => prev.map(p => p.month === cpl.month ? { ...p, price: val } : p));
@@ -879,11 +2330,64 @@ export default function App() {
                               />
                             </div>
                           </td>
+                          <td className="p-4 bg-amber-50/10">
+                            <div className="flex items-center justify-end gap-2">
+                              <span className="text-slate-300">$</span>
+                              <input
+                                type="number"
+                                value={filteredNaphtha.find(n => n.month === cpl.month)?.price ?? 0}
+                                onFocus={selectZeroPriceInput}
+                                onMouseUp={keepZeroPriceSelected}
+                                onChange={e => {
+                                  const val = Number(e.target.value);
+                                  setNaphthaprices(prev => {
+                                    const exists = prev.some(p => p.month === cpl.month);
+                                    return exists
+                                      ? prev.map(p => p.month === cpl.month ? { ...p, price: val } : p)
+                                      : [...prev, { month: cpl.month, price: val }];
+                                  });
+                                }}
+                                className="bg-white border border-slate-200 group-hover:border-amber-400 rounded-lg px-3 py-1.5 font-mono font-bold text-lg text-right w-40 focus:ring-4 focus:ring-amber-100 outline-none transition-all shadow-sm"
+                              />
+                            </div>
+                          </td>
+                          <td className="p-4 bg-emerald-50/10">
+                            <div className="flex items-center justify-end gap-2">
+                              <span className="text-slate-300">$</span>
+                              <input
+                                type="number"
+                                value={filteredBenzene.find(b => b.month === cpl.month)?.price ?? 0}
+                                onFocus={selectZeroPriceInput}
+                                onMouseUp={keepZeroPriceSelected}
+                                onChange={e => {
+                                  const val = Number(e.target.value);
+                                  setBenzeneprices(prev => {
+                                    const exists = prev.some(p => p.month === cpl.month);
+                                    return exists
+                                      ? prev.map(p => p.month === cpl.month ? { ...p, price: val } : p)
+                                      : [...prev, { month: cpl.month, price: val }];
+                                  });
+                                }}
+                                className="bg-white border border-slate-200 group-hover:border-emerald-400 rounded-lg px-3 py-1.5 font-mono font-bold text-lg text-right w-40 focus:ring-4 focus:ring-emerald-100 outline-none transition-all shadow-sm"
+                              />
+                            </div>
+                          </td>
                           <td className="p-4 text-center">
                             <button 
-                              onClick={() => {
+                              onClick={async () => {
                                 if (confirm(`Remove price for ${cpl.month}?`)) {
-                                  setCplPrices(prev => prev.filter(p => p.month !== cpl.month));
+                                  try {
+                                    loadStart();
+                                    await api.cpl.remove(cpl.month);
+                                    setCplPrices(prev => prev.filter(p => p.month !== cpl.month));
+                                    setNaphthaprices(prev => prev.filter(p => p.month !== cpl.month));
+                                    setBenzeneprices(prev => prev.filter(p => p.month !== cpl.month));
+                                  } catch (err) {
+                                    const msg = err instanceof ApiError ? err.message : 'Failed to remove CPL price';
+                                    setAppError(msg);
+                                  } finally {
+                                    loadDone();
+                                  }
                                 }
                               }}
                               className="text-red-400 hover:text-red-600 text-[10px] font-black uppercase tracking-widest hover:underline transition-all"
@@ -895,7 +2399,7 @@ export default function App() {
                       ))}
                       {filteredCplPrices.length === 0 && (
                         <tr>
-                          <td colSpan={4} className="p-12 text-center">
+                          <td colSpan={6} className="p-12 text-center">
                             <div className="flex flex-col items-center gap-2 opacity-30">
                               <Calendar size={48} />
                               <p className="font-bold uppercase tracking-widest text-xs">No data for FY {String(selectedFy).slice(-2)}</p>
@@ -924,12 +2428,14 @@ export default function App() {
                   <div className="flex items-center gap-4">
                     <span className="text-[10px] text-slate-400 font-serif italic">Viewing FY {String(selectedFy).slice(-2)} · Records: {filteredCplPrices.length}</span>
                     <button 
-                      onClick={() => {
+                      onClick={async () => {
                         const btn = document.activeElement as HTMLButtonElement;
                         const originalText = btn.innerText;
                         btn.innerText = 'SAVING...';
                         btn.disabled = true;
+                        loadStart();
                         setTimeout(() => {
+                          loadDone();
                           btn.innerText = '✅ SAVED SUCCESSFULLY';
                           btn.classList.replace('bg-green-600', 'bg-blue-600');
                           setTimeout(() => {
@@ -953,45 +2459,30 @@ export default function App() {
                 key="dashboard"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="p-8 grid grid-cols-6 gap-6 overflow-auto"
+                exit={{ opacity: 0 }}
+                className="flex-1"
               >
-                <StatCard label="Yearly Projection" value="$1.4M" trend="+12%" color="blue" subtitle="Total Sales Volume FY26" />
-                <StatCard label="Forecast Variance" value="-8.4%" trend="-2%" color="red" subtitle="Delta: Fcst vs Budget (SepF)" />
-                <StatCard label="CPL Stability" value="98.2%" trend="+0.5%" color="green" subtitle="Price formula match rate" />
-
-                <div className="col-span-full bg-slate-900 rounded-2xl shadow-2xl p-8 relative overflow-hidden">
-                  <div className="absolute top-0 right-0 p-12 opacity-5 pointer-events-none">
-                    <RefreshCw size={240} className="animate-spin-slow text-white" />
-                  </div>
-                  <div className="relative z-10">
-                    <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full mb-6 text-blue-400">
-                      <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" />
-                      <span className="text-[8px] font-black uppercase tracking-[0.2em]">PDC Intelligence Engine</span>
-                    </div>
-                    <h3 className="text-2xl text-white font-bold tracking-tight mb-4">Phase 2: Production Suggestion</h3>
-                    <p className="text-slate-400 text-sm mb-8 leading-relaxed max-w-3xl font-medium">
-                      Machine learning identifies a <span className="text-blue-400 font-bold">15% supply gap</span> for Nylon-A6 in Q3. 
-                      Strategic suggestion: Shift maintenance cycle for Line 4 from August to September to maximize output during the iPhone ramp-up period.
-                    </p>
-                    <div className="flex gap-4">
-                      <button className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-full text-xs font-black uppercase tracking-widest transition shadow-lg shadow-blue-500/20 active:scale-95">
-                        Download Inventory Report
-                      </button>
-                      <button className="bg-white/5 hover:bg-white/10 border border-white/10 text-white px-8 py-3 rounded-full text-xs font-black uppercase tracking-widest transition" onClick={() => setActiveTab('suggestion')}>
-                        Full Scenario Analysis
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                <PlaceholderView
+                  title="Analytics"
+                  icon={<BarChart3 size={48} />}
+                  description="Power BI weekly and monthly sales reports will open from this area when the report link is ready."
+                />
               </motion.div>
             )}
 
-            {activeTab === 'weekly' && <ReportView onShowDetail={() => setShowDetailModal(true)} title="Weekly Sales Report" description="Performance tracking by week and registration" data={forecastData} registrations={registrations} type="weekly" />}
-            {activeTab === 'monthly' && <ReportView onShowDetail={() => setShowDetailModal(true)} title="Monthly Sales Report" description="Consolidated monthly performance vs previous year" data={forecastData} registrations={registrations} type="monthly" />}
+            {activeTab === 'weekly' && (
+              <Suspense fallback={<div className="flex h-full items-center justify-center text-sm font-bold text-slate-400">Loading report...</div>}>
+                <ReportView onShowDetail={() => setShowDetailModal(true)} title="Weekly Sales Report" description="Performance tracking by week and registration" data={forecastData} registrations={registrations} type="weekly" />
+              </Suspense>
+            )}
+            {activeTab === 'monthly' && (
+              <Suspense fallback={<div className="flex h-full items-center justify-center text-sm font-bold text-slate-400">Loading report...</div>}>
+                <ReportView onShowDetail={() => setShowDetailModal(true)} title="Monthly Sales Report" description="Consolidated monthly performance vs previous year" data={forecastData} registrations={registrations} type="monthly" />
+              </Suspense>
+            )}
             {activeTab === 'yearly' && <BudgetView title="Yearly Budget - FY26" subtitle="Comparison: BB vs SepF vs DecF" registrations={registrations} />}
             {activeTab === 'mtp' && <BudgetView title="MTP Budget (3Yr Horizon)" subtitle="Strategic 3-year capacity & sales planning" isMtp registrations={registrations} />}
             {activeTab === 'pdc' && <PdcSummaryView data={forecastData} version={selectedVersion} registrations={registrations} />}
-            {activeTab === 'inventory' && <PlaceholderView title="Inventory for Sale" icon={<Box size={48} />} />}
             {activeTab === 'suggestion' && <PlaceholderView title="Production Suggestion" icon={<Truck size={48} />} />}
           </AnimatePresence>
         </main>
@@ -1002,9 +2493,24 @@ export default function App() {
           fy={selectedFy} 
           cplPrices={cplPrices}
           onClose={() => setIsAddingCpl(false)} 
-          onAdd={(month, price) => {
-            setCplPrices(prev => [...prev, { month, price }].sort((a, b) => a.month.localeCompare(b.month)));
-            setIsAddingCpl(false);
+          onAdd={async (month, price) => {
+            try {
+              loadStart();
+              await api.cpl.create(month, price);
+              setCplPrices(prev => [...prev, { month, price }].sort((a, b) => a.month.localeCompare(b.month)));
+              setNaphthaprices(prev =>
+                prev.some(p => p.month === month) ? prev : [...prev, { month, price: 0 }].sort((a, b) => a.month.localeCompare(b.month))
+              );
+              setBenzeneprices(prev =>
+                prev.some(p => p.month === month) ? prev : [...prev, { month, price: 0 }].sort((a, b) => a.month.localeCompare(b.month))
+              );
+              setIsAddingCpl(false);
+            } catch (err) {
+              const msg = err instanceof ApiError ? err.message : 'Failed to add CPL price';
+              setAppError(msg);
+            } finally {
+              loadDone();
+            }
           }}
         />
       )}
@@ -1016,6 +2522,158 @@ export default function App() {
           registrations={registrations}
         />
       )}
+    </div>
+  );
+}
+
+function InventoryCommitPreviewModal({
+  open,
+  rows,
+  isSaving,
+  isInventoryLoading,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean;
+  rows: InventoryCommitPreviewRow[];
+  isSaving: boolean;
+  isInventoryLoading: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  if (!open) return null;
+
+  const formatQty = (value: number | undefined) =>
+    value === undefined
+      ? '-'
+      : value.toLocaleString(undefined, {
+          minimumFractionDigits: 3,
+          maximumFractionDigits: 3,
+        });
+  const totalDelta = rows.reduce((sum, row) => sum + row.delta, 0);
+  const inventoryDate = rows.find(row => row.inventory?.inventoryDate)?.inventory?.inventoryDate ?? '-';
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative flex max-h-[86vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 bg-slate-50 px-5 py-4">
+          <div className="min-w-0">
+            <h3 className="text-sm font-black uppercase tracking-[0.18em] text-slate-800">
+              Inventory Impact Preview
+            </h3>
+            <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              Preview only. Inventory deduction rules are not saved in this phase. Inventory date: {inventoryDate}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-white hover:text-slate-700"
+            aria-label="Close inventory preview"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="grid shrink-0 grid-cols-3 gap-3 border-b border-slate-100 px-5 py-3">
+          <div className="rounded-lg border border-slate-200 bg-white p-3">
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Changed Cells</p>
+            <p className="mt-1 font-mono text-2xl font-black text-slate-800">{rows.length.toLocaleString()}</p>
+          </div>
+          <div className="rounded-lg border border-blue-100 bg-blue-50 p-3">
+            <p className="text-[9px] font-black uppercase tracking-widest text-blue-500">Total Forecast Delta</p>
+            <p className="mt-1 font-mono text-2xl font-black text-blue-700">{formatQty(totalDelta)}</p>
+          </div>
+          <div className="rounded-lg border border-amber-100 bg-amber-50 p-3">
+            <p className="text-[9px] font-black uppercase tracking-widest text-amber-600">Inventory Status</p>
+            <p className="mt-1 text-xs font-black uppercase text-amber-700">
+              {isInventoryLoading ? 'Loading Inventory' : 'Preview Only'}
+            </p>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="min-w-[1180px] w-full border-collapse text-xs">
+            <thead className="sticky top-0 z-10 bg-slate-100 text-[10px] font-black uppercase tracking-wider text-slate-500">
+              <tr className="divide-x divide-slate-200">
+                <th className="p-3 text-left">Registration</th>
+                <th className="p-3 text-left">Period</th>
+                <th className="p-3 text-left">Plant</th>
+                <th className="p-3 text-left">Material</th>
+                <th className="p-3 text-right">Old Fcst</th>
+                <th className="p-3 text-right">New Fcst</th>
+                <th className="p-3 text-right">Delta</th>
+                <th className="p-3 text-right">Pending Material</th>
+                <th className="p-3 text-right">A0</th>
+                <th className="p-3 text-right">NonA0</th>
+                <th className="p-3 text-right">WaitJudge</th>
+                <th className="p-3 text-right">OG</th>
+                <th className="p-3 text-right">YO</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows.map(row => (
+                <tr key={row.key} className="divide-x divide-slate-50 hover:bg-slate-50">
+                  <td className="max-w-[240px] p-3">
+                    <div className="truncate font-bold text-slate-800" title={row.registration.registrationTopic}>
+                      {row.registration.registrationTopic || row.registration.id}
+                    </div>
+                    <div className="truncate text-[10px] font-semibold text-slate-400">
+                      {row.registration.ownerName || '-'}
+                    </div>
+                  </td>
+                  <td className="p-3 font-mono font-bold text-slate-600">{row.period}</td>
+                  <td className="p-3 font-mono font-bold text-blue-700">{row.registration.plantCode || '-'}</td>
+                  <td className="p-3">
+                    <div className="font-mono font-bold text-slate-700">{row.registration.materialCode || '-'}</div>
+                    <div className="truncate text-[10px] text-slate-400">{row.registration.materialDescription || '-'}</div>
+                  </td>
+                  <td className="p-3 text-right font-mono text-slate-500">{formatQty(row.baseValue)}</td>
+                  <td className="p-3 text-right font-mono font-bold text-slate-800">{formatQty(row.currentValue)}</td>
+                  <td className={cn(
+                    'p-3 text-right font-mono font-black',
+                    row.delta >= 0 ? 'text-blue-700' : 'text-rose-600'
+                  )}>
+                    {formatQty(row.delta)}
+                  </td>
+                  <td className="p-3 text-right font-mono font-bold text-indigo-700">
+                    {formatQty(row.pendingMaterialDelta)}
+                  </td>
+                  <td className="p-3 text-right font-mono font-bold text-emerald-700">{formatQty(row.inventory?.a0Qty)}</td>
+                  <td className="p-3 text-right font-mono font-bold text-amber-700">{formatQty(row.inventory?.nonA0Qty)}</td>
+                  <td className="p-3 text-right font-mono font-bold text-sky-700">{formatQty(row.inventory?.waitJudgeQty)}</td>
+                  <td className="p-3 text-right font-mono font-bold text-rose-700">{formatQty(row.inventory?.ogQty)}</td>
+                  <td className="p-3 text-right font-mono font-bold text-violet-700">{formatQty(row.inventory?.yoQty)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-slate-100 bg-slate-50 px-5 py-4">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            Confirm Save writes Forecast only. Inventory allocation save waits for Data Analyst rules.
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-[10px] font-black uppercase tracking-wider text-slate-600 transition-colors hover:bg-slate-100"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={isSaving}
+              className="rounded-lg bg-green-600 px-5 py-2 text-[10px] font-black uppercase tracking-wider text-white shadow-sm transition-colors hover:bg-green-700 disabled:cursor-wait disabled:opacity-60"
+            >
+              {isSaving ? 'Saving...' : 'Confirm Save'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1123,7 +2781,7 @@ function AddCplModal({ fy, onClose, onAdd, cplPrices }: { fy: number; onClose: (
         animate={{ opacity: 1, scale: 1 }}
         className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden p-8"
       >
-        <h3 className="text-xl font-bold text-slate-800 mb-2">Add Monthly CPL Base</h3>
+        <h3 className="text-xl font-bold text-slate-800 mb-2">Add Monthly Prices</h3>
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-8">Fiscal Year {fy} Management</p>
 
         <div className="space-y-6">
@@ -1233,8 +2891,9 @@ function ReportView({ title, description, data, registrations, type, onShowDetai
         </div>
         <div className="flex gap-2 pb-1">
           <button 
-            onClick={() => {
-              const worksheet = XLSX.utils.json_to_sheet(trendData);
+          onClick={async () => {
+            const XLSX = await import('xlsx');
+            const worksheet = XLSX.utils.json_to_sheet(trendData);
               const workbook = XLSX.utils.book_new();
               XLSX.utils.book_append_sheet(workbook, worksheet, "Performance_Trend");
               XLSX.writeFile(workbook, `${title.replace(/\s+/g, '_')}_${format(new Date(), 'yyyyMMdd')}.xlsx`);
@@ -1537,42 +3196,28 @@ function PdcSummaryView({ data, version, registrations }: { data: ForecastValue[
 );
 }
 
-function PlaceholderView({ title, icon }: { title: string; icon: React.ReactNode }) {
+function PlaceholderView({
+  title,
+  icon,
+  description,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  description?: string;
+}) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col items-center justify-center text-center p-12 space-y-4">
       <div className="text-slate-200 animate-pulse">{icon}</div>
       <div>
         <h2 className="text-2xl font-bold tracking-tight text-slate-400">{title}</h2>
-        <p className="text-slate-400 text-xs font-black uppercase tracking-widest mt-1 italic">Enterprise Phase 2 · Coming Soon</p>
+        <p className="text-slate-400 text-xs font-black uppercase tracking-widest mt-1 italic">Coming Soon</p>
       </div>
       <div className="max-w-md bg-blue-50/50 p-6 rounded-2xl border border-blue-100">
         <p className="text-xs text-blue-600 leading-relaxed font-medium">
-          This system is being prepared for Microsoft SQL Server integration. Phase 2 modules will include real-time inventory synchronization and AI-driven production capacity suggestions.
+          {description ?? 'This module is being prepared for the next phase.'}
         </p>
       </div>
     </motion.div>
-  );
-}
-
-// --- Status/Nav Helpers ---
-
-function SideNavItem({ active, label, onClick, disabled, icon }: { active?: boolean; label: string; onClick: () => void; disabled?: boolean; icon?: React.ReactNode }) {
-  return (
-    <button 
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "w-full text-left p-2.5 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-all flex items-center gap-2",
-        active 
-          ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20 border-l-4 border-white" 
-          : disabled 
-            ? "text-slate-300 italic cursor-not-allowed opacity-50" 
-            : "text-slate-600 hover:bg-white hover:text-slate-900 border-l-4 border-transparent"
-      )}
-    >
-      {icon && <span className={cn(active ? "text-white" : "text-slate-400")}>{icon}</span>}
-      {label}
-    </button>
   );
 }
 
@@ -1584,29 +3229,6 @@ function FilterGroup({ label, action, children }: { label: string; action?: Reac
         {action ? <div className="ml-auto">{action}</div> : null}
       </div>
       {children}
-    </div>
-  );
-}
-
-function StatCard({ label, value, trend, color, subtitle }: { label: string; value: string; trend: string; color: 'blue' | 'green' | 'red'; subtitle: string }) {
-  const themes = {
-    blue: "text-blue-600 bg-blue-50 border-blue-100",
-    green: "text-emerald-600 bg-emerald-50 border-emerald-100",
-    red: "text-rose-600 bg-rose-50 border-rose-100"
-  };
-  
-  return (
-    <div className="col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <span className="text-slate-400 text-[10px] uppercase font-black tracking-widest">{label}</span>
-        <span className={cn("px-2 py-1 rounded-full text-[10px] font-black border", themes[color])}>
-          {trend}
-        </span>
-      </div>
-      <div>
-        <span className="text-4xl font-black tracking-tighter text-slate-900">{value}</span>
-        <p className="text-[10px] text-slate-400 font-medium mt-1 uppercase tracking-tight">{subtitle}</p>
-      </div>
     </div>
   );
 }

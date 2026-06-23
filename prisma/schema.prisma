@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// App-owned tables  (migrations managed by this app)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Forecast versions (e.g. "Current Forecast", "BB FY26", "SepF FY26")
+model ForecastVersion {
+  name       String          @id @db.NVarChar(100)
+  versionKey Int             @default(0)
+  isStandard Boolean         @default(false)
+  createdAt  DateTime        @default(now())
+  values     ForecastValue[]
+
+  @@unique([versionKey])
+  @@map("forecast_versions")
+}
+
+/// Forecast input values (app-owned, written by users)
+/// period field stores:
+///   - Month granularity: "YYYY-MM"   e.g. "2026-06"
+///   - Week  granularity: "YYYY-WXX"  e.g. "2026-W23"
+model ForecastValue {
+  registrationId String          @db.NVarChar(200)
+  versionName    String          @db.NVarChar(100)
+  period         String          @db.NVarChar(15)   // "YYYY-MM" or "YYYY-WXX"
+  granularity    String          @db.NVarChar(10)   // "month" or "week"
+  qtyFcst        Decimal         @default(0) @db.Decimal(18, 4)
+  priceFcst      Decimal         @default(0) @db.Decimal(18, 4)
+  lastBatchId    String?         @db.NVarChar(36)
+  updatedAt      DateTime        @default(now()) @updatedAt
+
+  version        ForecastVersion @relation(fields: [versionName], references: [name])
+
+  @@id([registrationId, versionName, period])
+  @@map("forecast_values")
+}
+
+model ForecastCommitBatch {
+  id          String              @id @default(uuid()) @db.NVarChar(36)
+  source      String              @db.NVarChar(50)
+  changedBy   String              @db.NVarChar(100)
+  stampPeriod String              @default("No") @db.NVarChar(30)
+  recordCount Int                 @default(0)
+  createdAt   DateTime            @default(now())
+  changes     ForecastChangeLog[]
+
+  @@map("forecast_commit_batches")
+}
+
+model ForecastChangeLog {
+  id             String              @id @default(uuid()) @db.NVarChar(36)
+  batchId        String              @db.NVarChar(36)
+  registrationId String              @db.NVarChar(200)
+  versionName    String              @db.NVarChar(100)
+  period         String              @db.NVarChar(15)
+  granularity    String              @db.NVarChar(10)
+  oldQtyFcst     Decimal?            @db.Decimal(18, 4)
+  newQtyFcst     Decimal             @db.Decimal(18, 4)
+  oldPriceFcst   Decimal?            @db.Decimal(18, 4)
+  newPriceFcst   Decimal             @db.Decimal(18, 4)
+  changedAt      DateTime            @default(now())
+  batch          ForecastCommitBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([registrationId, versionName, period])
+  @@index([batchId])
+  @@map("forecast_change_logs")
+}
+
+/// CPL (Cost Plus Landing) base prices by month
+model CplPrice {
+  month     String  @id @db.NVarChar(7)  // "YYYY-MM"
+  price     Decimal @default(0) @db.Decimal(18, 4)
+
+  @@map("cpl_prices")
+}
+
+/// Registrations created inside Sales Forecast. CRM remains read-only.
+model MasterDataCrmRegistration {
+  id                          String   @id @default(uuid()) @db.NVarChar(36)
+  newKey                      String   @unique @db.NVarChar(1000)
+  keyForNoCRM                 String   @unique @db.NVarChar(500)
+  mainRegist                  Int      @default(1)
+  registrationTopic           String   @db.NVarChar(500)
+  soldToCode                  String   @db.NVarChar(100)
+  shipToCode                  String   @db.NVarChar(100)
+  endUserCode                 String   @db.NVarChar(100)
+  plantCode                   String   @db.NVarChar(100)
+  materialCode                String   @db.NVarChar(100)
+  onOffSpec                   String   @db.NVarChar(20)
+  materialDescription         String   @db.NVarChar(500)
+  ownerName                   String   @db.NVarChar(500)
+  countryName                 String?  @db.NVarChar(500)
+  shipToName                  String?  @db.NVarChar(500)
+  soldToName                  String?  @db.NVarChar(500)
+  endUser                     String?  @db.NVarChar(500)
+  groupName                   String?  @db.NVarChar(500)
+  materialNameOnCoa           String?  @db.NVarChar(500)
+  additionalRequirement       String?  @db.NVarChar(1000)
+  pic                         String?  @db.NVarChar(500)
+  commission                  Decimal  @default(0) @db.Decimal(18, 4)
+  productDescription          String?  @db.NVarChar(1000)
+  classified                  String?  @db.NVarChar(500)
+  commissionIndirect          Decimal  @default(0) @db.Decimal(18, 4)
+  commissionFinancialDiscount Decimal  @default(0) @db.Decimal(18, 4)
+  newCoaName                  String?  @db.NVarChar(500)
+  newTier1                    String?  @db.NVarChar(500)
+  newOem                      String?  @db.NVarChar(500)
+  packing                     String?  @db.NVarChar(500)
+  agreedSpecType              String?  @db.NVarChar(500)
+  wasteScrap                  String?  @db.NVarChar(500)
+  forResaleNotApprove         String?  @db.NVarChar(500)
+  imdsDate                    String?  @db.NVarChar(100)
+  model                       String?  @db.NVarChar(500)
+  approve                     String?  @db.NVarChar(500)
+  partName                    String?  @db.NVarChar(500)
+  coaName                     String?  @db.NVarChar(500)
+  process                     String?  @db.NVarChar(500)
+  application                 String?  @db.NVarChar(500)
+  subApp                      String?  @db.NVarChar(500)
+  zoneName                    String?  @db.NVarChar(500)
+  plantName                   String?  @db.NVarChar(500)
+  countryCode                 String?  @db.NVarChar(100)
+  endUserExportControl        String?  @db.NVarChar(500)
+  endUserName                 String?  @db.NVarChar(500)
+  productName                 String?  @db.NVarChar(500)
+  priceFormula                String   @default("CPL") @db.NVarChar(50)
+  spread                      Decimal  @default(0) @db.Decimal(18, 4)
+  createdBy                   String   @default("sales-forecast-web") @db.NVarChar(100)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @default(now()) @updatedAt
+
+  @@map("master_data_crm_registrations")
+}
+
+model DataSnapshotState {
+  source        String    @id @db.NVarChar(50)
+  activeVersion String?   @db.NVarChar(36)
+  status        String    @default("idle") @db.NVarChar(20)
+  startedAt     DateTime?
+  completedAt   DateTime?
+  lastError     String?   @db.NVarChar(2000)
+  rowCount      Int       @default(0)
+
+  @@map("data_snapshot_state")
+}

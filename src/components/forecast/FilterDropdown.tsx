@@ -1,9 +1,10 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Filter, ListFilter, Search, X } from 'lucide-react';
+import { Check, ChevronDown, Filter, ListFilter, LoaderCircle, Search, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { cn } from '../../lib/utils';
 import type { ColumnFilterValue, Registration } from '../../types/forecast';
+import type { FilterOptionsPage } from '../../lib/api';
 import { EMPTY_COLUMN_FILTER } from '../../types/forecast';
 import { getUniqueColumnValues, isColumnFilterActive } from './forecastFilterUtils';
 
@@ -13,6 +14,12 @@ export interface FilterDropdownProps {
   registrations: Registration[];
   value: ColumnFilterValue;
   onChange: (value: ColumnFilterValue) => void;
+  staticOptions?: string[];
+  loadOptions?: (
+    columnKey: string,
+    search: string,
+    cursor?: string | null
+  ) => Promise<FilterOptionsPage>;
 }
 
 function stopDragPropagation(e: React.SyntheticEvent) {
@@ -32,10 +39,14 @@ export function FilterDropdown({
   registrations,
   value,
   onChange,
+  staticOptions,
+  loadOptions,
 }: FilterDropdownProps) {
   const [open, setOpen] = useState(false);
   const [listSearch, setListSearch] = useState('');
   const [panelPos, setPanelPos] = useState({ top: 0, left: 0, width: 220 });
+  const [remoteOptions, setRemoteOptions] = useState<string[]>([]);
+  const [isLoadingOptions, setIsLoadingOptions] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -46,8 +57,12 @@ export function FilterDropdown({
   const selectedSet = useMemo(() => new Set(filter.selectedValues), [filter.selectedValues]);
 
   const allOptions = useMemo(
-    () => getUniqueColumnValues(registrations, columnKey),
-    [registrations, columnKey]
+    () => {
+      if (staticOptions) return staticOptions;
+      if (!loadOptions) return getUniqueColumnValues(registrations, columnKey);
+      return Array.from(new Set([...filter.selectedValues, ...remoteOptions]));
+    },
+    [staticOptions, loadOptions, remoteOptions, registrations, columnKey, filter.selectedValues]
   );
 
   const filteredOptions = useMemo(() => {
@@ -55,6 +70,43 @@ export function FilterDropdown({
     if (!query) return allOptions;
     return allOptions.filter(opt => opt.toLowerCase().includes(query));
   }, [allOptions, listSearch]);
+
+  useEffect(() => {
+    if (!open || staticOptions || !loadOptions) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setIsLoadingOptions(true);
+      setRemoteOptions([]);
+      try {
+        let cursor: string | null = null;
+        let hasMore = true;
+
+        while (!cancelled && hasMore) {
+          const page = await loadOptions(columnKey, listSearch.trim(), cursor);
+          if (cancelled) return;
+
+          setRemoteOptions(previous =>
+            Array.from(new Set([...previous, ...page.items]))
+          );
+          cursor = page.nextCursor;
+          hasMore = page.hasMore && Boolean(cursor);
+          if (hasMore) {
+            await new Promise(resolve => window.setTimeout(resolve, 50));
+          }
+        }
+      } catch {
+        if (!cancelled) setRemoteOptions([]);
+      } finally {
+        if (!cancelled) setIsLoadingOptions(false);
+      }
+    }, listSearch ? 250 : 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [columnKey, listSearch, loadOptions, open, staticOptions]);
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
@@ -181,12 +233,22 @@ export function FilterDropdown({
             </button>
           )}
         </div>
-        <p className="mt-1 text-[8px] text-slate-400">
-          {filteredOptions.length} of {allOptions.length} values
-        </p>
+        <div className="mt-1 flex min-h-3 items-center gap-1 text-[8px] text-slate-400">
+          {isLoadingOptions && <LoaderCircle size={9} className="animate-spin text-blue-500" />}
+          <span>
+            {isLoadingOptions
+              ? `Loading values... ${filteredOptions.length} found`
+              : `${filteredOptions.length} values`}
+          </span>
+        </div>
       </div>
       <div className="max-h-44 overflow-y-auto py-0.5" role="listbox" aria-multiselectable="true">
-        {filteredOptions.length === 0 ? (
+        {isLoadingOptions && filteredOptions.length === 0 ? (
+          <div className="flex items-center justify-center gap-2 px-3 py-4 text-[10px] text-slate-400">
+            <LoaderCircle size={12} className="animate-spin text-blue-500" />
+            Searching...
+          </div>
+        ) : filteredOptions.length === 0 ? (
           <p className="px-3 py-3 text-[10px] text-slate-400 text-center italic">No matching values</p>
         ) : (
           filteredOptions.map(option => {

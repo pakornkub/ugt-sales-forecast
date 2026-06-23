@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.cache
+.env
+.env.*
+*.log
+coverage
+server.js
+CurrentForecast*.xlsx

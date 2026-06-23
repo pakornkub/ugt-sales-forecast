@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 
 interface UsePaneResizeOptions {
   initialWidth: number;
@@ -27,7 +28,7 @@ export function usePaneResize({
   }, [initialWidth, minWidth, maxWidth]);
 
   const onDividerPointerDown = useCallback(
-    (e: React.PointerEvent) => {
+    (e: ReactPointerEvent) => {
       e.preventDefault();
       draggingRef.current = true;
       setIsDragging(true);

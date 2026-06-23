@@ -1,5 +1,9 @@
 export type Dimension = 'Qty' | 'Price' | 'Amount';
 export type ValueType = 'Act' | 'Fcst' | 'Act-Fcst';
+export type PriceFormula = 'CPL' | 'Naphtha' | 'Benzene' | 'Fixed Price';
+export const PRICE_FORMULA_OPTIONS: PriceFormula[] = ['CPL', 'Naphtha', 'Benzene', 'Fixed Price'];
+export type CarryDetailKey = 'carryIn' | 'carryOut' | 'carryTotal';
+export type CarryDetailVisibility = Record<CarryDetailKey, boolean>;
 
 export const REG_COLUMN_KEYS = [
   'ownerName',
@@ -9,6 +13,11 @@ export const REG_COLUMN_KEYS = [
   'countryName',
   'materialDescription',
   'materialCode',
+  'inventoryA0Qty',
+  'inventoryNonA0Qty',
+  'inventoryWaitJudgeQty',
+  'inventoryOgQty',
+  'inventoryYoQty',
   'carryInETD',
   'carryOutETD',
   'carryInLoading',
@@ -51,12 +60,17 @@ export const REG_COLUMN_KEYS = [
   'endUserName',
   'productName',
   'column1',
+  'priceFormula',
 ] as const;
 
 export type RegColumnKey = (typeof REG_COLUMN_KEYS)[number];
 
 export interface Registration {
   id: string;
+  isDraft?: boolean;
+  isManaged?: boolean;
+  sourceStatus?: 'matched' | 'registration_only' | 'actual_only';
+  keyForNoCRM?: string;
   ownerName: string;
   registrationTopic: string;
   onOffSpec: string;
@@ -108,11 +122,31 @@ export interface Registration {
   carryOutLoading: number;
   priceFormula: string;
   spread: number;
+  inventoryA0Qty?: number;
+  inventoryNonA0Qty?: number;
+  inventoryWaitJudgeQty?: number;
+  inventoryOgQty?: number;
+  inventoryYoQty?: number;
+  inventoryDate?: string | null;
 }
 
 export interface CPLPrice {
   month: string;
   price: number;
+}
+
+export interface ActualValue {
+  registrationId: string;
+  sourceStatus?: 'matched' | 'actual_only';
+  registration?: Registration;
+  month: string;
+  qtyAct: number;
+  priceAct: number;
+  amountAct: number;
+  carryInETD: number;
+  carryOutETD: number;
+  carryInLoading: number;
+  carryOutLoading: number;
 }
 
 export interface ForecastValue {
@@ -122,6 +156,55 @@ export interface ForecastValue {
   qtyAct: number;
   qtyFcst: number;
   priceAct: number;
+  amountAct?: number;
+  carryInETD?: number;
+  carryOutETD?: number;
+  carryInLoading?: number;
+  carryOutLoading?: number;
+}
+
+export interface ForecastSummaryPeriod {
+  period: string;
+  qtyAct: number;
+  qtyFcst: number;
+  carryInETD: number;
+  carryOutETD: number;
+  carryInLoading: number;
+  carryOutLoading: number;
+}
+
+export interface ForecastSummary {
+  generatedAt: string;
+  periods: ForecastSummaryPeriod[];
+}
+
+export interface ForecastSummaryRequest {
+  startMonth: string;
+  endMonth: string;
+  periods: string[];
+  granularity: 'month' | 'week';
+  version: string;
+  filters: Record<string, string[]>;
+  formulaFilter: string[];
+  formulaOverrides: Record<string, string>;
+  carryFilters: Record<string, string[]>;
+}
+
+export interface InventoryRow {
+  registrationId: string;
+  ownerName: string;
+  registrationTopic: string;
+  plantCode: string;
+  materialCode: string;
+  materialDescription: string;
+  inventoryMaterialDescription: string;
+  a0Qty: number;
+  nonA0Qty: number;
+  waitJudgeQty: number;
+  ogQty: number;
+  yoQty: number;
+  totalQty: number;
+  inventoryDate: string | null;
 }
 
 export interface ColumnFilterValue {

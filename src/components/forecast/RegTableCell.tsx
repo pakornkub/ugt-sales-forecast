@@ -10,9 +10,14 @@ const cellStyles: Partial<Record<RegColumnKey, string>> = {
   materialCode: 'font-mono text-slate-500 uppercase',
   plantCode: 'font-mono font-bold text-blue-700',
   onOffSpec: 'font-bold text-slate-600',
+  inventoryA0Qty: 'font-mono font-bold text-emerald-700 justify-end',
+  inventoryNonA0Qty: 'font-mono font-bold text-amber-700 justify-end',
+  inventoryWaitJudgeQty: 'font-mono font-bold text-sky-700 justify-end',
+  inventoryOgQty: 'font-mono font-bold text-rose-700 justify-end',
+  inventoryYoQty: 'font-mono font-bold text-violet-700 justify-end',
 };
 
-export function RegTableCell({
+function RegTableCellBase({
   reg,
   columnKey,
   width,
@@ -21,7 +26,9 @@ export function RegTableCell({
   columnKey: RegColumnKey;
   width: number;
 }) {
-  const value = getRegistrationFieldValue(reg, columnKey);
+  const rawValue = reg[columnKey as keyof Registration];
+  const isPendingInventory = columnKey.startsWith('inventory') && typeof rawValue !== 'number';
+  const value = isPendingInventory ? '-' : getRegistrationFieldValue(reg, columnKey);
   return (
     <td
       style={{ width, minWidth: width, maxWidth: width }}
@@ -30,13 +37,25 @@ export function RegTableCell({
       <div
         className={cn(
           forecastBodyCellClass,
-          'group-hover:bg-slate-50 transition-colors truncate',
+          'truncate',
           cellStyles[columnKey] ?? 'text-slate-600'
         )}
         title={value}
       >
-        {value}
+        <span className="truncate">{value}</span>
+        {reg.isDraft && columnKey === 'ownerName' && (
+          <span className="ml-1.5 shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[8px] font-black uppercase text-amber-700">
+            Draft
+          </span>
+        )}
       </div>
     </td>
   );
 }
+
+export const RegTableCell = React.memo(RegTableCellBase, (previous, next) => {
+  if (previous.width !== next.width || previous.columnKey !== next.columnKey) return false;
+  if (previous.reg.id !== next.reg.id || previous.reg.isDraft !== next.reg.isDraft) return false;
+  return previous.reg[previous.columnKey as keyof Registration] ===
+    next.reg[next.columnKey as keyof Registration];
+});

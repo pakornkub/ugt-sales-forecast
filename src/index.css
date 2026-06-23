@@ -1,8 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Libre+Baskerville:italic@400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Libre+Baskerville:italic@400&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", "Noto Sans Thai", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --font-serif: "Libre Baskerville", serif;
 }
@@ -11,6 +11,41 @@
   body {
     @apply bg-[#F8FAFC] text-slate-800 antialiased;
   }
+
+  select {
+    font-family: var(--font-sans);
+  }
+}
+
+.sf-select {
+  color: rgb(30 41 59);
+  background-color: rgb(248 250 252);
+  border-color: rgb(203 213 225);
+  font-family: var(--font-sans);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.sf-select:hover {
+  border-color: rgb(148 163 184);
+  background-color: white;
+}
+
+.sf-select:focus {
+  border-color: #007ABE;
+  box-shadow: 0 0 0 3px rgba(0, 122, 190, 0.14);
+}
+
+.sf-select option {
+  color: rgb(30 41 59);
+  background-color: white;
+  font-family: var(--font-sans);
+  font-weight: 500;
+}
+
+.sf-select option:checked {
+  color: white;
+  background-color: #007ABE;
 }
 
 /* Custom Scrollbars */
@@ -28,8 +63,10 @@
 }
 
 .forecast-table-scroll {
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
   scrollbar-gutter: stable;
+  contain: strict;
+  will-change: scroll-position;
 }
 
 .forecast-table-scroll::-webkit-scrollbar {
@@ -38,6 +75,28 @@
 }
 
 .forecast-table-scroll::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full hover:bg-slate-400;
+}
+
+.forecast-horizontal-scrollbar {
+  height: 12px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: rgb(241 245 249);
+  border-top: 1px solid rgb(226 232 240);
+  scrollbar-gutter: stable;
+}
+
+.forecast-horizontal-scrollbar::-webkit-scrollbar {
+  height: 8px;
+}
+
+.forecast-horizontal-scrollbar::-webkit-scrollbar-track {
+  @apply bg-slate-100;
+}
+
+.forecast-horizontal-scrollbar::-webkit-scrollbar-thumb {
   @apply bg-slate-300 rounded-full hover:bg-slate-400;
 }
 
@@ -61,10 +120,12 @@
 
 /* REG pane: independent vertical + horizontal scroll */
 .forecast-reg-pane {
-  scroll-behavior: smooth;
-  overflow-x: auto;
+  scroll-behavior: auto;
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-gutter: stable;
+  contain: strict;
+  will-change: scroll-position;
 }
 
 .forecast-reg-pane::-webkit-scrollbar {
@@ -77,10 +138,17 @@
 }
 
 .forecast-month-pane {
-  scroll-behavior: smooth;
-  overflow-x: auto;
+  scroll-behavior: auto;
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-gutter: stable;
+  contain: strict;
+  will-change: scroll-position;
+}
+
+.forecast-reg-pane *,
+.forecast-month-pane * {
+  transition-property: none !important;
 }
 
 #forecast-table-split-container {

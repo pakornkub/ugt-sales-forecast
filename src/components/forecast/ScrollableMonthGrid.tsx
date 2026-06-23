@@ -1,10 +1,25 @@
-import React, { RefObject, useLayoutEffect, useState } from 'react';
+import React, {
+  RefObject,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
 import { format, parseISO } from 'date-fns';
 import { cn } from '../../lib/utils';
+import { api, type ForecastAuditChange, type ForecastCellAuditSummary } from '../../lib/api';
 import type {
   CPLPrice,
+  CarryDetailKey,
+  CarryDetailVisibility,
   Dimension,
   ForecastValue,
+  ForecastSummary,
+  PriceFormula,
   Registration,
   ValueType,
 } from '../../types/forecast';
@@ -15,18 +30,86 @@ const formatWeekRangeLabel = (weekKey: string) => {
   const [start, end] = weekKey.split('|');
   return `${format(parseISO(start), 'dd MMM')} - ${format(parseISO(end), 'dd MMM')}`;
 };
-import { getForecastCellValue } from './forecastCellUtils';
+const formatWednesdayLabel = (dateKey: string) => format(parseISO(dateKey), 'dd MMM').toUpperCase();
+const formatEditableInputValue = (value: number) => (value === 0 ? '' : String(value));
+const INPUT_COMMIT_DELAY_MS = 60;
+const parseEditableInputValue = (value: string) => {
+  const parsed = value.trim() === '' ? 0 : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+function buildForecastIndex(forecastData: ForecastValue[]) {
+  const index = new Map<string, ForecastValue>();
+  const addAggregate = (key: string, item: ForecastValue) => {
+    const current = index.get(key);
+    index.set(key, {
+      ...item,
+      qtyAct: (current?.qtyAct ?? 0) + (item.qtyAct ?? 0),
+      qtyFcst: (current?.qtyFcst ?? 0) + (item.qtyFcst ?? 0),
+      amountAct: (current?.amountAct ?? 0) + (item.amountAct ?? 0),
+    });
+  };
+
+  forecastData.forEach(item => {
+    index.set(`${item.registrationId}|${item.version}|${item.month}`, item);
+    const actualKey = `actual|${item.registrationId}|${item.month}`;
+    const currentActual = index.get(actualKey);
+    const hasActualData =
+      item.qtyAct !== 0 ||
+      (item.amountAct ?? 0) !== 0 ||
+      (item.carryInETD ?? 0) !== 0 ||
+      (item.carryOutETD ?? 0) !== 0 ||
+      (item.carryInLoading ?? 0) !== 0 ||
+      (item.carryOutLoading ?? 0) !== 0;
+    if (!currentActual || hasActualData) index.set(actualKey, item);
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(item.month)) {
+      addAggregate(
+        `dailyMonth|${item.registrationId}|${item.version}|${item.month.slice(0, 7)}`,
+        item
+      );
+    } else if (isWeekRangeKey(item.month)) {
+      const [start, end] = item.month.split('|');
+      const months = new Set<string>();
+      const cursor = new Date(`${start}T00:00:00Z`);
+      const endDate = new Date(`${end}T00:00:00Z`);
+      while (cursor <= endDate) {
+        months.add(cursor.toISOString().slice(0, 7));
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
+      months.forEach(month => addAggregate(
+        `weeklyMonth|${item.registrationId}|${item.version}|${month}`,
+        item
+      ));
+    }
+  });
+  return index;
+}
+import { getForecastCellValue, monthKey } from './forecastCellUtils';
 import {
   forecastBodyCellClass,
   forecastFooterCellClass,
+  FORECAST_TABLE_METRICS,
   forecastTbodyRowStyle,
   forecastTfootRowStyle,
   forecastTheadRowStyle,
 } from './forecastTableMetrics';
 import { MONTH_COLUMN_WIDTH } from './regTableColumns';
 
+interface LiveDraftValue {
+  regId: string;
+  month: string;
+  value: number;
+  baseValue: number;
+}
+
+interface LiveFooterTotalsHandle {
+  setDraftValue: (draft: LiveDraftValue) => void;
+}
+
 interface ScrollableMonthGridProps {
   scrollRef: RefObject<HTMLDivElement | null>;
+  scrollTop: number;
   onScroll: () => void;
   monthsToShow: string[];
   registrations: Registration[];
@@ -38,10 +121,66 @@ interface ScrollableMonthGridProps {
   onForecastChange: (regId: string, month: string, value: number) => void;
   forecastMode: 'month' | 'week' | 'day';
   planningView: 'sale' | 'accounting' | 'production';
+  formulaMap: Map<string, PriceFormula>;
+  naphthaprices: CPLPrice[];
+  benzeneprices: CPLPrice[];
+  fixedPriceMap: Map<string, Map<string, number>>;
+  onFixedPriceChange: (regId: string, month: string, price: number) => void;
+  carryDetailVisibility: CarryDetailVisibility;
+  forecastSummary: ForecastSummary | null;
+  isForecastSummaryUpdating: boolean;
+  forecastAuditVersion: number;
+}
+
+interface CarryValues {
+  carryIn: number;
+  carryOut: number;
+  carryTotal: number;
+}
+
+interface AuditTooltipState {
+  key: string;
+  registrationId: string;
+  version: string;
+  period: string;
+  rect: DOMRect;
+  data?: ForecastCellAuditSummary;
+  isLoading: boolean;
+  error?: string;
+  showAll: boolean;
+  allChanges?: ForecastAuditChange[];
+}
+
+const CARRY_COLUMN_LABELS: Record<CarryDetailKey, string> = {
+  carryIn: 'Carry In (TON)',
+  carryOut: 'Carry Out (TON)',
+  carryTotal: 'Carry Total (TON)',
+};
+
+function getCarryValues(
+  registrationId: string,
+  period: string,
+  planningView: 'sale' | 'accounting' | 'production',
+  forecastIndex: Map<string, ForecastValue>
+): CarryValues {
+  const actual = forecastIndex.get(`actual|${registrationId}|${period}`);
+  const useLoading = planningView === 'production';
+  const carryIn = useLoading
+    ? actual?.carryInLoading ?? 0
+    : actual?.carryInETD ?? 0;
+  const carryOut = useLoading
+    ? actual?.carryOutLoading ?? 0
+    : actual?.carryOutETD ?? 0;
+  return {
+    carryIn,
+    carryOut,
+    carryTotal: carryIn - carryOut,
+  };
 }
 
 export function ScrollableMonthGrid({
   scrollRef,
+  scrollTop,
   onScroll,
   monthsToShow,
   registrations,
@@ -53,36 +192,449 @@ export function ScrollableMonthGrid({
   onForecastChange,
   forecastMode,
   planningView,
+  formulaMap,
+  naphthaprices,
+  benzeneprices,
+  fixedPriceMap,
+  onFixedPriceChange,
+  carryDetailVisibility,
+  forecastSummary,
+  isForecastSummaryUpdating,
+  forecastAuditVersion,
 }: ScrollableMonthGridProps) {
   const [availableWidth, setAvailableWidth] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(600);
+  const [auditTooltip, setAuditTooltip] = useState<AuditTooltipState | null>(null);
+  const horizontalScrollRef = useRef<HTMLDivElement>(null);
+  const liveFooterTotalsRef = useRef<LiveFooterTotalsHandle>(null);
+  const auditCacheRef = useRef(new Map<string, ForecastCellAuditSummary>());
+  const auditHoverTimerRef = useRef<number | null>(null);
+  const auditCloseTimerRef = useRef<number | null>(null);
+  const auditAbortRef = useRef<AbortController | null>(null);
 
   useLayoutEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
     setAvailableWidth(container.offsetWidth);
+    setViewportHeight(container.clientHeight);
 
     const observer = new ResizeObserver(entries => {
-      const width = entries[0]?.contentRect.width;
-      if (width) setAvailableWidth(width);
+      const entry = entries[0];
+      if (!entry) return;
+      if (entry.contentRect.width) setAvailableWidth(entry.contentRect.width);
+      setViewportHeight(entry.target.clientHeight);
     });
 
     observer.observe(container);
     return () => observer.disconnect();
   }, [scrollRef]);
 
-  const monthCount = Math.max(1, monthsToShow.length);
+  const ROW_HEIGHT = FORECAST_TABLE_METRICS.bodyRowHeight;
+  const OVERSCAN = 2;
+  const visibleStart = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const visibleEnd = Math.min(registrations.length, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN);
+  const visibleRegistrations = registrations.slice(visibleStart, visibleEnd);
+  const topSpacerHeight = visibleStart * ROW_HEIGHT;
+  const bottomSpacerHeight = Math.max(0, (registrations.length - visibleEnd) * ROW_HEIGHT);
+
+  const closeAuditTooltip = useCallback(() => {
+    if (auditHoverTimerRef.current !== null) {
+      window.clearTimeout(auditHoverTimerRef.current);
+      auditHoverTimerRef.current = null;
+    }
+    if (auditCloseTimerRef.current !== null) {
+      window.clearTimeout(auditCloseTimerRef.current);
+      auditCloseTimerRef.current = null;
+    }
+    auditAbortRef.current?.abort();
+    auditAbortRef.current = null;
+    setAuditTooltip(null);
+  }, []);
+
+  const cancelAuditTooltipClose = useCallback(() => {
+    if (auditCloseTimerRef.current !== null) {
+      window.clearTimeout(auditCloseTimerRef.current);
+      auditCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleAuditTooltipClose = useCallback((delay = 90) => {
+    if (auditHoverTimerRef.current !== null) {
+      window.clearTimeout(auditHoverTimerRef.current);
+      auditHoverTimerRef.current = null;
+    }
+    if (auditCloseTimerRef.current !== null) {
+      window.clearTimeout(auditCloseTimerRef.current);
+    }
+    auditCloseTimerRef.current = window.setTimeout(() => {
+      auditCloseTimerRef.current = null;
+      closeAuditTooltip();
+    }, delay);
+  }, [closeAuditTooltip]);
+
+  const openAuditTooltip = useCallback((
+    event: React.MouseEvent,
+    registrationId: string,
+    period: string,
+    value: number
+  ) => {
+    if (selectedType === 'Act' || selectedDimension !== 'Qty' || value === 0) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const key = `${registrationId}|${selectedVersion}|${period}`;
+    if (auditHoverTimerRef.current !== null) {
+      window.clearTimeout(auditHoverTimerRef.current);
+    }
+    auditHoverTimerRef.current = window.setTimeout(() => {
+      const cached = auditCacheRef.current.get(key);
+      setAuditTooltip({
+        key,
+        registrationId,
+        version: selectedVersion,
+        period,
+        rect,
+        data: cached,
+        isLoading: !cached,
+        showAll: false,
+      });
+      if (cached) return;
+
+      auditAbortRef.current?.abort();
+      const controller = new AbortController();
+      auditAbortRef.current = controller;
+      api.forecast.auditCell(registrationId, selectedVersion, period, controller.signal)
+        .then(data => {
+          auditCacheRef.current.set(key, data);
+          if (controller.signal.aborted) return;
+          setAuditTooltip(previous =>
+            previous?.key === key
+              ? { ...previous, data, isLoading: false }
+              : previous
+          );
+        })
+        .catch(error => {
+          if (controller.signal.aborted) return;
+          setAuditTooltip(previous =>
+            previous?.key === key
+              ? { ...previous, isLoading: false, error: 'Failed to load history' }
+              : previous
+          );
+          console.error('[forecast audit tooltip] load failed:', error);
+        });
+    }, 300);
+  }, [selectedDimension, selectedType, selectedVersion]);
+
+  const showAllAuditHistory = useCallback(async () => {
+    const current = auditTooltip;
+    if (!current) return;
+    const controller = new AbortController();
+    auditAbortRef.current?.abort();
+    auditAbortRef.current = controller;
+    setAuditTooltip(previous => previous ? { ...previous, isLoading: true, showAll: true } : previous);
+    try {
+      const rows = await api.forecast.audit({
+        registrationId: current.registrationId,
+        version: current.version,
+        start: current.period,
+        end: current.period,
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) {
+        setAuditTooltip(previous =>
+          previous?.key === current.key
+            ? { ...previous, allChanges: rows, isLoading: false, showAll: true }
+            : previous
+        );
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setAuditTooltip(previous =>
+          previous?.key === current.key
+            ? { ...previous, isLoading: false, error: 'Failed to load full history' }
+            : previous
+        );
+        console.error('[forecast audit tooltip] full history failed:', error);
+      }
+    }
+  }, [auditTooltip]);
+
+  useEffect(() => () => {
+    if (auditHoverTimerRef.current !== null) window.clearTimeout(auditHoverTimerRef.current);
+    if (auditCloseTimerRef.current !== null) window.clearTimeout(auditCloseTimerRef.current);
+    auditAbortRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    auditCacheRef.current.clear();
+    closeAuditTooltip();
+  }, [closeAuditTooltip, forecastAuditVersion]);
+
+  const forecastIndex = useMemo(() => buildForecastIndex(forecastData), [forecastData]);
+  const cplPriceByMonth = useMemo(
+    () => new Map(cplPrices.map(price => [price.month, price.price])),
+    [cplPrices]
+  );
+  const naphthaPriceByMonth = useMemo(
+    () => new Map(naphthaprices.map(price => [price.month, price.price])),
+    [naphthaprices]
+  );
+  const benzenePriceByMonth = useMemo(
+    () => new Map(benzeneprices.map(price => [price.month, price.price])),
+    [benzeneprices]
+  );
+
+  /*
+  const footerTotals = useMemo(
+    () =>
+      monthsToShow.map(m => {
+        if (selectedDimension === 'Price') {
+          // Weighted average price: sum(qty_i × price_i) / sum(qty_i)
+          let totalQty = 0;
+          let totalAmt = 0;
+          registrations.forEach(reg => {
+            const { value: qty } = getForecastCellValue(
+              reg, m, selectedVersion, 'Qty', selectedType,
+              deferredForecastData, cplPrices, forecastMode, planningView, deferredForecastIndex,
+              formulaMap.get(reg.id), naphthaprices, benzeneprices, fixedPriceMap
+            );
+            const { value: price } = getForecastCellValue(
+              reg, m, selectedVersion, 'Price', selectedType,
+              deferredForecastData, cplPrices, forecastMode, planningView, deferredForecastIndex,
+              formulaMap.get(reg.id), naphthaprices, benzeneprices, fixedPriceMap
+            );
+            totalQty += qty;
+            totalAmt += qty * price;
+          });
+          return totalQty > 0 ? totalAmt / totalQty : 0;
+        }
+        return registrations.reduce((sum, reg) => {
+          const { value } = getForecastCellValue(
+            reg, m, selectedVersion, selectedDimension, selectedType,
+            deferredForecastData, cplPrices, forecastMode, planningView, deferredForecastIndex,
+            formulaMap.get(reg.id), naphthaprices, benzeneprices, fixedPriceMap
+          );
+          return sum + value;
+        }, 0);
+      }),
+    [registrations, deferredForecastData, deferredForecastIndex, monthsToShow, selectedVersion, selectedDimension, selectedType, cplPrices, forecastMode, planningView, formulaMap, naphthaprices, benzeneprices, fixedPriceMap]
+  );
+  */
+  const summaryByPeriod = useMemo(
+    () => new Map(forecastSummary?.periods.map(period => [period.period, period]) ?? []),
+    [forecastSummary]
+  );
+  const summaryFooterTotals = useMemo(
+    () => monthsToShow.map(period => {
+      if (selectedDimension !== 'Qty') return null;
+      const summary = summaryByPeriod.get(period);
+      if (!summary) return null;
+      const carryNet = planningView === 'production'
+        ? summary.carryInLoading - summary.carryOutLoading
+        : planningView === 'accounting'
+          ? summary.carryInETD - summary.carryOutETD
+          : 0;
+      const actual = summary.qtyAct + carryNet;
+      const forecast = summary.qtyFcst + carryNet;
+      if (selectedType === 'Act') return actual;
+      if (selectedType === 'Act-Fcst') return actual - forecast;
+      return forecast;
+    }),
+    [monthsToShow, planningView, selectedDimension, selectedType, summaryByPeriod]
+  );
+  const calculatedFooterTotals = useMemo(
+    () => monthsToShow.map(period => {
+      if (selectedDimension === 'Qty') {
+        return summaryFooterTotals[monthsToShow.indexOf(period)];
+      }
+
+      if (selectedDimension === 'Price') {
+        const getWeightedAverage = (type: ValueType) => {
+          let totalQty = 0;
+          let weightedAmount = 0;
+
+          registrations.forEach(registration => {
+            const qty = getForecastCellValue(
+              registration,
+              period,
+              selectedVersion,
+              'Qty',
+              type,
+              forecastData,
+              cplPrices,
+              forecastMode,
+              planningView,
+              forecastIndex,
+              formulaMap.get(registration.id),
+              naphthaprices,
+              benzeneprices,
+              fixedPriceMap,
+              {
+                cpl: cplPriceByMonth,
+                naphtha: naphthaPriceByMonth,
+                benzene: benzenePriceByMonth,
+              }
+            ).value;
+            const price = getForecastCellValue(
+              registration,
+              period,
+              selectedVersion,
+              'Price',
+              type,
+              forecastData,
+              cplPrices,
+              forecastMode,
+              planningView,
+              forecastIndex,
+              formulaMap.get(registration.id),
+              naphthaprices,
+              benzeneprices,
+              fixedPriceMap,
+              {
+                cpl: cplPriceByMonth,
+                naphtha: naphthaPriceByMonth,
+                benzene: benzenePriceByMonth,
+              }
+            ).value;
+
+            if (!Number.isFinite(qty) || !Number.isFinite(price)) return;
+            totalQty += qty;
+            weightedAmount += qty * price;
+          });
+
+          return totalQty === 0 ? 0 : weightedAmount / totalQty;
+        };
+
+        if (selectedType === 'Act-Fcst') {
+          return getWeightedAverage('Act') - getWeightedAverage('Fcst');
+        }
+        return getWeightedAverage(selectedType);
+      }
+
+      return registrations.reduce((sum, registration) => {
+        const { value } = getForecastCellValue(
+          registration,
+          period,
+          selectedVersion,
+          selectedDimension,
+          selectedType,
+          forecastData,
+          cplPrices,
+          forecastMode,
+          planningView,
+          forecastIndex,
+          formulaMap.get(registration.id),
+          naphthaprices,
+          benzeneprices,
+          fixedPriceMap,
+          {
+            cpl: cplPriceByMonth,
+            naphtha: naphthaPriceByMonth,
+            benzene: benzenePriceByMonth,
+          }
+        );
+        return sum + value;
+      }, 0);
+    }),
+    [
+      benzenePriceByMonth,
+      benzeneprices,
+      cplPriceByMonth,
+      cplPrices,
+      fixedPriceMap,
+      forecastData,
+      forecastIndex,
+      forecastMode,
+      formulaMap,
+      monthsToShow,
+      naphthaPriceByMonth,
+      naphthaprices,
+      planningView,
+      registrations,
+      selectedDimension,
+      selectedType,
+      selectedVersion,
+      summaryFooterTotals,
+    ]
+  );
+
+  const handleLiveDraftValueChange = useCallback((draft: LiveDraftValue) => {
+    liveFooterTotalsRef.current?.setDraftValue(draft);
+  }, []);
+
+  const visibleCarryColumns = useMemo(
+    () => forecastMode === 'month'
+      ? (Object.keys(carryDetailVisibility) as CarryDetailKey[])
+          .filter(key => carryDetailVisibility[key])
+      : [],
+    [carryDetailVisibility, forecastMode]
+  );
+  const columnsPerPeriod = 1 + visibleCarryColumns.length;
+  const totalColumnCount = Math.max(1, monthsToShow.length * columnsPerPeriod);
   const effectiveMonthWidth = Math.max(
     MONTH_COLUMN_WIDTH,
-    availableWidth > 0 ? Math.floor(availableWidth / monthCount) : MONTH_COLUMN_WIDTH
+    availableWidth > 0 ? Math.floor(availableWidth / totalColumnCount) : MONTH_COLUMN_WIDTH
   );
-  const tableContentWidth = monthCount * effectiveMonthWidth;
+  const tableContentWidth = totalColumnCount * effectiveMonthWidth;
+  const carryFooterTotals = useMemo(() => {
+    const totals = new Map<string, CarryValues>();
+    if (visibleCarryColumns.length === 0) return totals;
+    monthsToShow.forEach(period => {
+      totals.set(
+        period,
+        registrations.reduce<CarryValues>((sum, registration) => {
+          const values = getCarryValues(registration.id, period, planningView, forecastIndex);
+          return {
+            carryIn: sum.carryIn + values.carryIn,
+            carryOut: sum.carryOut + values.carryOut,
+            carryTotal: sum.carryTotal + values.carryTotal,
+          };
+        }, { carryIn: 0, carryOut: 0, carryTotal: 0 })
+      );
+    });
+    return totals;
+  }, [forecastIndex, monthsToShow, planningView, registrations, visibleCarryColumns.length]);
+  const summaryCarryFooterTotals = useMemo(() => {
+    const totals = new Map<string, CarryValues>();
+    if (visibleCarryColumns.length === 0) return totals;
+    monthsToShow.forEach(period => {
+      const summary = summaryByPeriod.get(period);
+      if (!summary) return;
+      const carryIn = planningView === 'production'
+        ? summary.carryInLoading
+        : summary.carryInETD;
+      const carryOut = planningView === 'production'
+        ? summary.carryOutLoading
+        : summary.carryOutETD;
+      totals.set(period, {
+        carryIn,
+        carryOut,
+        carryTotal: carryIn - carryOut,
+      });
+    });
+    return totals;
+  }, [monthsToShow, planningView, summaryByPeriod, visibleCarryColumns.length]);
+
+  const handleVerticalScroll = useCallback(() => {
+    if (auditTooltip || auditHoverTimerRef.current !== null) closeAuditTooltip();
+    onScroll();
+  }, [auditTooltip, closeAuditTooltip, onScroll]);
+
+  const handleHorizontalScroll = () => {
+    if (auditTooltip || auditHoverTimerRef.current !== null) closeAuditTooltip();
+    if (!scrollRef.current || !horizontalScrollRef.current) return;
+    scrollRef.current.scrollLeft = horizontalScrollRef.current.scrollLeft;
+  };
 
   return (
-    <div className="flex flex-1 flex-col min-h-0 min-w-0 w-full self-stretch bg-slate-50 border-l border-slate-100">
+    <div className="relative flex flex-1 flex-col min-h-0 min-w-0 w-full self-stretch bg-slate-50 border-l border-slate-100">
+      {isForecastSummaryUpdating && forecastSummary && (
+        <div className="pointer-events-none absolute right-3 top-2 z-40 rounded border border-blue-200 bg-white/95 px-2 py-1 text-[9px] font-bold uppercase text-blue-600 shadow-sm">
+          Updating totals
+        </div>
+      )}
       <div
         ref={scrollRef}
-        onScroll={onScroll}
-        className="flex-1 min-h-0 w-full overflow-x-auto overflow-y-auto forecast-table-scroll forecast-month-pane"
+        onScroll={handleVerticalScroll}
+        className="flex-1 min-h-0 w-full forecast-table-scroll forecast-month-pane"
       >
         {/* min-w-full fills pane width so no white gap when few month columns */}
         <div className="min-w-full inline-block align-top min-h-full">
@@ -91,33 +643,82 @@ export function ScrollableMonthGrid({
             style={{ width: tableContentWidth }}
           >
             <thead>
-              <tr style={forecastTheadRowStyle}>
-                {monthsToShow.map(m => (
-                  <th
-                    key={m}
-                    style={{ width: MONTH_COLUMN_WIDTH, minWidth: MONTH_COLUMN_WIDTH }}
-                    className="sticky top-0 z-20 p-0 bg-blue-50 border-l border-blue-200 align-middle overflow-hidden"
-                  >
-                    <div
-                      className={cn(
-                        forecastBodyCellClass,
-                        'justify-center text-[10px] text-blue-800 uppercase font-black'
-                      )}
+              {visibleCarryColumns.length > 0 ? (
+                <>
+                  <tr style={{ height: FORECAST_TABLE_METRICS.headerHeight / 2 }}>
+                    {monthsToShow.map(m => (
+                      <th
+                        key={m}
+                        colSpan={columnsPerPeriod}
+                        className="sticky top-0 z-20 border-l border-blue-200 bg-blue-50 p-0 align-middle"
+                      >
+                        <div className="flex h-full items-center justify-center text-[10px] font-black uppercase text-blue-800">
+                          {format(parseISO(`${m}-01`), "MMM''yy")}
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                  <tr style={{ height: FORECAST_TABLE_METRICS.headerHeight / 2 }}>
+                    {monthsToShow.flatMap(m => [
+                      <th
+                        key={`${m}|value`}
+                        style={{ width: effectiveMonthWidth, minWidth: effectiveMonthWidth }}
+                        className="sticky top-[38px] z-20 border-l border-t border-blue-200 bg-blue-50 p-0"
+                      >
+                        <div className="flex h-full items-center justify-center text-[8px] font-black uppercase text-blue-700">
+                          {selectedDimension} {selectedType}
+                        </div>
+                      </th>,
+                      ...visibleCarryColumns.map(key => (
+                        <th
+                          key={`${m}|${key}`}
+                          style={{ width: effectiveMonthWidth, minWidth: effectiveMonthWidth }}
+                          className="sticky top-[38px] z-20 border-l border-t border-blue-200 bg-cyan-50 p-0"
+                        >
+                          <div className="flex h-full items-center justify-center px-1 text-center text-[8px] font-black uppercase text-cyan-800">
+                            {CARRY_COLUMN_LABELS[key]}
+                          </div>
+                        </th>
+                      )),
+                    ])}
+                  </tr>
+                </>
+              ) : (
+                <tr style={forecastTheadRowStyle}>
+                  {monthsToShow.map(m => (
+                    <th
+                      key={m}
+                      style={{ width: effectiveMonthWidth, minWidth: effectiveMonthWidth }}
+                      className="sticky top-0 z-20 p-0 bg-blue-50 border-l border-blue-200 align-middle overflow-hidden"
                     >
-                      {isWeekRangeKey(m)
-                        ? formatWeekRangeLabel(m)
-                        : m.length === 10
-                          ? m
-                          : format(parseISO(`${m}-01`), "MMM''yy")}
-                    </div>
-                  </th>
-                ))}
-              </tr>
+                      <div
+                        className={cn(
+                          forecastBodyCellClass,
+                          'justify-center text-[10px] text-blue-800 uppercase font-black'
+                        )}
+                      >
+                        {forecastMode === 'week' && m.length === 10
+                          ? formatWednesdayLabel(m)
+                          : isWeekRangeKey(m)
+                            ? formatWeekRangeLabel(m)
+                            : m.length === 10
+                              ? m
+                              : format(parseISO(`${m}-01`), "MMM''yy")}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              )}
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {registrations.map(reg => (
-                <tr key={reg.id} className="hover:bg-slate-50/80" style={forecastTbodyRowStyle}>
-                  {monthsToShow.map(m => {
+              {topSpacerHeight > 0 && (
+                <tr style={{ height: topSpacerHeight }}>
+                  <td colSpan={totalColumnCount} />
+                </tr>
+              )}
+              {visibleRegistrations.map(reg => (
+                <tr key={reg.id} style={forecastTbodyRowStyle}>
+                  {monthsToShow.flatMap(m => {
                     const { value, isEditable } = getForecastCellValue(
                       reg,
                       m,
@@ -127,14 +728,32 @@ export function ScrollableMonthGrid({
                       forecastData,
                       cplPrices,
                       forecastMode,
-                      planningView
+                      planningView,
+                      forecastIndex,
+                      formulaMap.get(reg.id),
+                      naphthaprices,
+                      benzeneprices,
+                      fixedPriceMap,
+                      {
+                        cpl: cplPriceByMonth,
+                        naphtha: naphthaPriceByMonth,
+                        benzene: benzenePriceByMonth,
+                      }
                     );
-                    return (
+                    const carryValues = visibleCarryColumns.length > 0
+                      ? getCarryValues(reg.id, m, planningView, forecastIndex)
+                      : null;
+                    return [
                       <td
-                        key={m}
-                        style={{ width: MONTH_COLUMN_WIDTH, minWidth: MONTH_COLUMN_WIDTH }}
+                        key={`${m}|value`}
+                        style={{ width: effectiveMonthWidth, minWidth: effectiveMonthWidth }}
+                        onMouseEnter={event => {
+                          cancelAuditTooltipClose();
+                          openAuditTooltip(event, reg.id, m, value);
+                        }}
+                        onMouseLeave={() => scheduleAuditTooltipClose()}
                         className={cn(
-                          'p-0 border-l border-slate-100 align-middle overflow-hidden',
+                          'p-0 border-l border-slate-100 align-middle overflow-hidden relative',
                           isEditable ? 'bg-blue-50/40' : 'bg-white'
                         )}
                       >
@@ -146,63 +765,385 @@ export function ScrollableMonthGrid({
                           )}
                         >
                           {isEditable ? (
-                            <input
-                              type="number"
-                              value={value === 0 ? '' : value}
-                              onChange={e =>
-                                onForecastChange(reg.id, m, Number(e.target.value))
-                              }
-                              className="w-full h-6 text-right font-mono font-bold bg-white border border-blue-200 rounded px-1 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-100"
+                            <ForecastEditableCell
+                              value={value}
+                              identityKey={`${reg.id}|${m}|${selectedVersion}|${selectedDimension}|${selectedType}|${planningView}`}
+                              regId={reg.id}
+                              month={m}
+                              selectedDimension={selectedDimension}
+                              onForecastChange={onForecastChange}
+                              onFixedPriceChange={onFixedPriceChange}
+                              onLiveValueChange={handleLiveDraftValueChange}
                             />
                           ) : (
                             <span className="font-mono pr-1">{value.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}</span>
                           )}
+                          {selectedDimension === 'Qty' && selectedType !== 'Act' && value !== 0 && (
+                            <span className="pointer-events-none absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-blue-500/70" />
+                          )}
                         </div>
-                      </td>
-                    );
+                      </td>,
+                      ...visibleCarryColumns.map(key => (
+                        <td
+                          key={`${m}|${key}`}
+                          style={{ width: effectiveMonthWidth, minWidth: effectiveMonthWidth }}
+                          className="border-l border-cyan-100 bg-cyan-50/30 p-0 align-middle overflow-hidden"
+                        >
+                          <div className={cn(forecastBodyCellClass, 'justify-end font-mono text-cyan-800')}>
+                            {(carryValues?.[key] ?? 0).toLocaleString(undefined, {
+                              minimumFractionDigits: 3,
+                              maximumFractionDigits: 3,
+                            })}
+                          </div>
+                        </td>
+                      )),
+                    ];
                   })}
                 </tr>
               ))}
+              {bottomSpacerHeight > 0 && (
+                <tr style={{ height: bottomSpacerHeight }}>
+                  <td colSpan={totalColumnCount} />
+                </tr>
+              )}
             </tbody>
-            <tfoot className="shadow-[0_-4px_10px_rgba(0,0,0,0.1)]">
+            <tfoot className="shadow-[0_-1px_0_rgba(148,163,184,0.35)]">
               <tr style={forecastTfootRowStyle}>
-                {monthsToShow.map(m => {
-                  const total = registrations.reduce((sum, reg) => {
-                    const { value } = getForecastCellValue(
-                      reg,
-                      m,
-                      selectedVersion,
-                      selectedDimension,
-                      selectedType,
-                      forecastData,
-                      cplPrices,
-                      forecastMode,
-                      planningView
-                    );
-                    return sum + value;
-                  }, 0);
-                  return (
-                    <td
-                      key={m}
-                      style={{ width: MONTH_COLUMN_WIDTH, minWidth: MONTH_COLUMN_WIDTH }}
-                      className="sticky bottom-0 z-20 p-0 bg-slate-900 border-l border-slate-700 align-middle overflow-hidden"
-                    >
-                      <div
-                        className={cn(
-                          forecastFooterCellClass,
-                          'justify-end text-blue-400 font-mono text-sm tracking-tighter normal-case'
-                        )}
-                      >
-                        {total.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
-                      </div>
-                    </td>
-                  );
-                })}
+                <LiveFooterTotals
+                  ref={liveFooterTotalsRef}
+                  monthsToShow={monthsToShow}
+                  baseTotals={calculatedFooterTotals}
+                  liveEnabled={selectedDimension !== 'Price'}
+                  resetKey={`${selectedVersion}|${selectedDimension}|${selectedType}|${planningView}|${forecastMode}`}
+                  visibleCarryColumns={visibleCarryColumns}
+                  carryFooterTotals={summaryCarryFooterTotals}
+                  columnWidth={effectiveMonthWidth}
+                  isUpdating={isForecastSummaryUpdating}
+                />
               </tr>
             </tfoot>
           </table>
         </div>
       </div>
+      <div
+        ref={horizontalScrollRef}
+        onScroll={handleHorizontalScroll}
+        className="forecast-horizontal-scrollbar"
+      >
+        <div style={{ width: tableContentWidth, height: 1 }} />
+      </div>
+      {auditTooltip && createPortal(
+        <ForecastAuditTooltip
+          state={auditTooltip}
+          onClose={closeAuditTooltip}
+          onCancelClose={cancelAuditTooltipClose}
+          onShowAll={showAllAuditHistory}
+        />,
+        document.body
+      )}
     </div>
   );
 }
+
+function ForecastAuditTooltip({
+  state,
+  onClose,
+  onCancelClose,
+  onShowAll,
+}: {
+  state: AuditTooltipState;
+  onClose: () => void;
+  onCancelClose: () => void;
+  onShowAll: () => void;
+}) {
+  const changes = state.showAll ? state.allChanges : state.data?.latestChanges;
+  const top = Math.min(window.innerHeight - 260, Math.max(12, state.rect.top + 24));
+  const left = Math.min(window.innerWidth - 360, Math.max(12, state.rect.right - 340));
+  const formatNumber = (value: number | null) =>
+    value === null
+      ? '-'
+      : value.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+  const formatTime = (value: string) => {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? value
+      : date.toLocaleString(undefined, {
+          month: 'short',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+  };
+
+  return (
+      <div
+      className="fixed z-[90] w-[340px] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl"
+      style={{ top, left }}
+      onMouseEnter={onCancelClose}
+      onMouseLeave={onClose}
+      onMouseDown={event => event.stopPropagation()}
+    >
+      <div className="flex items-start justify-between gap-3 border-b border-slate-100 bg-slate-50 px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-[10px] font-black uppercase tracking-wider text-slate-700">
+            Forecast History
+          </div>
+          <div className="mt-0.5 truncate font-mono text-[9px] text-slate-400">
+            {state.period}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded px-1.5 py-0.5 text-xs font-bold text-slate-400 hover:bg-white hover:text-slate-700"
+          aria-label="Close forecast history"
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="max-h-[320px] overflow-auto p-3">
+        {state.isLoading && !changes ? (
+          <div className="space-y-2">
+            <div className="h-3 w-28 animate-pulse rounded bg-slate-200" />
+            <div className="h-10 animate-pulse rounded bg-slate-100" />
+            <div className="h-10 animate-pulse rounded bg-slate-100" />
+          </div>
+        ) : state.error ? (
+          <div className="text-[11px] font-semibold text-rose-600">{state.error}</div>
+        ) : state.data?.totalChanges === 0 ? (
+          <div className="text-[11px] font-semibold text-slate-500">No saved changes for this cell yet.</div>
+        ) : (
+          <>
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              Total changes: <span className="text-blue-700">{state.data?.totalChanges ?? changes?.length ?? 0}</span>
+            </div>
+            <div className="space-y-2">
+              {(changes ?? []).map(change => (
+                <div key={change.id} className="rounded-md border border-slate-100 bg-slate-50 px-2.5 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[11px] font-black text-slate-800">
+                      {formatNumber(change.oldQtyFcst)} → {formatNumber(change.newQtyFcst)}
+                    </span>
+                    <span className="rounded bg-white px-1.5 py-0.5 text-[8px] font-black uppercase text-slate-500">
+                      {change.source}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[9px] font-semibold text-slate-400">
+                    <span className="truncate">{change.changedBy}</span>
+                    <span>{formatTime(change.changedAt)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {!state.showAll && (state.data?.totalChanges ?? 0) > 3 && (
+              <button
+                type="button"
+                onClick={onShowAll}
+                className="mt-3 w-full rounded border border-blue-100 bg-blue-50 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-blue-700 hover:bg-blue-100"
+              >
+                View all history
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const ForecastEditableCell = React.memo(function ForecastEditableCell({
+  value,
+  identityKey,
+  regId,
+  month,
+  selectedDimension,
+  onForecastChange,
+  onFixedPriceChange,
+  onLiveValueChange,
+}: {
+  value: number;
+  identityKey: string;
+  regId: string;
+  month: string;
+  selectedDimension: Dimension;
+  onForecastChange: (regId: string, month: string, value: number) => void;
+  onFixedPriceChange: (regId: string, month: string, price: number) => void;
+  onLiveValueChange: (draft: LiveDraftValue) => void;
+}) {
+  const [draftValue, setDraftValue] = useState(formatEditableInputValue(value));
+  const [isFocused, setIsFocused] = useState(false);
+  const previousIdentityRef = useRef(identityKey);
+  const commitTimerRef = useRef<number | null>(null);
+  const lastCommittedNumberRef = useRef(value);
+
+  const clearScheduledCommit = () => {
+    if (commitTimerRef.current !== null) {
+      window.clearTimeout(commitTimerRef.current);
+      commitTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    if (previousIdentityRef.current !== identityKey) {
+      previousIdentityRef.current = identityKey;
+      clearScheduledCommit();
+      lastCommittedNumberRef.current = value;
+      setDraftValue(formatEditableInputValue(value));
+      return;
+    }
+    if (!isFocused) {
+      lastCommittedNumberRef.current = value;
+      setDraftValue(formatEditableInputValue(value));
+    }
+  }, [identityKey, isFocused, value]);
+
+  const commitValue = (nextValue: string) => {
+    const parsed = parseEditableInputValue(nextValue);
+    if (parsed === null) return;
+    if (parsed === lastCommittedNumberRef.current) return;
+
+    lastCommittedNumberRef.current = parsed;
+
+    if (selectedDimension === 'Price') {
+      onFixedPriceChange(regId, monthKey(month), parsed);
+    } else {
+      onForecastChange(regId, month, parsed);
+    }
+  };
+
+  const scheduleCommit = (nextValue: string) => {
+    clearScheduledCommit();
+    commitTimerRef.current = window.setTimeout(() => {
+      commitTimerRef.current = null;
+      commitValue(nextValue);
+    }, INPUT_COMMIT_DELAY_MS);
+  };
+
+  useEffect(() => () => clearScheduledCommit(), []);
+
+  return (
+    <input
+      type="number"
+      value={draftValue}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => {
+        clearScheduledCommit();
+        setIsFocused(false);
+        commitValue(draftValue);
+      }}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          clearScheduledCommit();
+          commitValue(draftValue);
+          e.currentTarget.blur();
+        }
+      }}
+      onChange={e => {
+        const nextValue = e.target.value;
+        setDraftValue(nextValue);
+        const parsed = parseEditableInputValue(nextValue);
+        if (parsed !== null) {
+          onLiveValueChange({ regId, month, value: parsed, baseValue: value });
+        }
+        scheduleCommit(nextValue);
+      }}
+      className="w-full h-6 text-right font-mono font-bold bg-white border border-blue-200 rounded px-1 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-100"
+    />
+  );
+});
+
+const LiveFooterTotals = React.memo(React.forwardRef<LiveFooterTotalsHandle, {
+  monthsToShow: string[];
+  baseTotals: Array<number | null>;
+  liveEnabled: boolean;
+  resetKey: string;
+  visibleCarryColumns: CarryDetailKey[];
+  carryFooterTotals: Map<string, CarryValues>;
+  columnWidth: number;
+  isUpdating: boolean;
+}>(function LiveFooterTotals({
+  monthsToShow,
+  baseTotals,
+  liveEnabled,
+  resetKey,
+  visibleCarryColumns,
+  carryFooterTotals,
+  columnWidth,
+  isUpdating,
+}, ref) {
+  const [draftValues, setDraftValues] = useState<Record<string, LiveDraftValue>>({});
+
+  useImperativeHandle(ref, () => ({
+    setDraftValue: (draft: LiveDraftValue) => {
+      if (!liveEnabled) return;
+      const key = `${draft.regId}|${draft.month}`;
+      setDraftValues(prev => ({
+        ...prev,
+        [key]: draft,
+      }));
+    },
+  }), [liveEnabled]);
+
+  useEffect(() => {
+    setDraftValues({});
+  }, [baseTotals, monthsToShow, resetKey]);
+
+  const liveTotals = useMemo(() => {
+    if (!liveEnabled) return baseTotals;
+
+    const nextTotals = [...baseTotals];
+    const monthIndex = new Map<string, number>(monthsToShow.map((month, idx) => [month, idx]));
+
+    (Object.values(draftValues) as LiveDraftValue[]).forEach(draft => {
+      const idx = monthIndex.get(draft.month);
+      if (idx === undefined) return;
+      if (nextTotals[idx] !== null) {
+        nextTotals[idx] += draft.value - draft.baseValue;
+      }
+    });
+
+    return nextTotals;
+  }, [baseTotals, draftValues, liveEnabled, monthsToShow]);
+
+  return (
+    <>
+      {monthsToShow.flatMap((m, idx) => [
+        <td
+          key={`${m}|value`}
+          style={{ width: columnWidth, minWidth: columnWidth }}
+          className="sticky bottom-0 z-20 p-0 bg-slate-50 border-t border-slate-200 border-l border-slate-200 align-middle overflow-hidden"
+        >
+          <div className={cn(forecastFooterCellClass, 'justify-end text-blue-700 font-mono text-sm tracking-tighter normal-case')}>
+            {liveTotals[idx] === null ? (
+              isUpdating ? (
+                <span className="h-3 w-16 animate-pulse rounded bg-slate-200" />
+              ) : (
+                <span className="text-slate-400">N/A</span>
+              )
+            ) : (
+              liveTotals[idx]!.toLocaleString(undefined, {
+                minimumFractionDigits: 3,
+                maximumFractionDigits: 3,
+              })
+            )}
+          </div>
+        </td>,
+        ...visibleCarryColumns.map(key => (
+          <td
+            key={`${m}|${key}`}
+            style={{ width: columnWidth, minWidth: columnWidth }}
+            className="sticky bottom-0 z-20 border-l border-cyan-100 border-t border-slate-200 bg-cyan-50 p-0 align-middle overflow-hidden"
+          >
+            <div className={cn(forecastFooterCellClass, 'justify-end font-mono text-cyan-800 normal-case')}>
+              {(carryFooterTotals.get(m)?.[key] ?? 0).toLocaleString(undefined, {
+                minimumFractionDigits: 3,
+                maximumFractionDigits: 3,
+              })}
+            </div>
+          </td>
+        )),
+      ])}
+    </>
+  );
+}));

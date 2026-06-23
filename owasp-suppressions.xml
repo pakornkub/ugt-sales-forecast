@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+  <!--
+    No vulnerabilities are suppressed by default.
+    Add a suppression only after the security team verifies that the finding is
+    not exploitable in UGT Sales Forecast. Every future suppression must include
+    a CVE/GHSA identifier, justification, owner, and expiry date.
+  -->
+</suppressions>
