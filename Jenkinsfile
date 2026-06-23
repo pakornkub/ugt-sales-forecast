@@ -17,7 +17,6 @@ pipeline {
     APP_BASE_URL = 'https://ugtweb.ube.co.th'
     IMAGE_NAME = 'ugt-sales-forecast'
     CONTAINER_NAME = 'ugt-sales-forecast'
-    DATABASE_URL = 'sqlserver://127.0.0.1:1433;database=build;user=build;password=build;encrypt=true;trustServerCertificate=true'
   }
 
   stages {
