@@ -95,6 +95,14 @@ function numberMatchesFilter(value: number, selectedValues: string[]) {
   });
 }
 
+function normalizeGranularity(value: unknown): 'month' | 'week' {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === 'month' || trimmed === 'week') return trimmed;
+  }
+  return 'month';
+}
+
 function normalizeForecastUpdates(updates: unknown[]) {
   const normalized = new Map<string, NormalizedForecastUpdate>();
   for (const value of updates) {
@@ -105,7 +113,7 @@ function normalizeForecastUpdates(updates: unknown[]) {
     const period = String(item.period ?? '').trim();
     if (!registrationId || !versionName || !period) continue;
     const periodKey = period;
-    const granularity = String(item.granularity ?? 'month');
+    const granularity = normalizeGranularity(item.granularity);
     const qtyFcst = Number(item.qtyFcst ?? 0);
     const priceFcst = Number(item.priceFcst ?? 0);
     normalized.set(`${registrationId}|${versionName}|${periodKey}`, {

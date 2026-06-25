@@ -38,6 +38,27 @@ const parseEditableInputValue = (value: string) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+type TimeoutHandle = ReturnType<typeof globalThis.setTimeout>;
+
+function clearScheduledTimeout(timerRef: { current: TimeoutHandle | null }) {
+  if (timerRef.current !== null) {
+    globalThis.clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }
+}
+
+function scheduleDelayedCommit(
+  timerRef: { current: TimeoutHandle | null },
+  nextValue: string,
+  onCommit: (value: string) => void,
+) {
+  clearScheduledTimeout(timerRef);
+  timerRef.current = globalThis.setTimeout(() => {
+    timerRef.current = null;
+    onCommit(nextValue);
+  }, INPUT_COMMIT_DELAY_MS);
+}
+
 function buildForecastIndex(forecastData: ForecastValue[]) {
   const index = new Map<string, ForecastValue>();
   const addAggregate = (key: string, item: ForecastValue) => {
@@ -910,7 +931,116 @@ function formatAuditTime(value: string) {
       });
 }
 
-function ForecastAuditChangeCard({ change }: { change: ForecastAuditChange }) {
+function AuditHistoryLoadingSkeleton({
+  rowClassName = 'h-12 rounded-lg bg-slate-100',
+  headerClassName = 'h-3 w-32 rounded bg-slate-200',
+  rowCount = 3,
+}: Readonly<{
+  rowClassName?: string;
+  headerClassName?: string;
+  rowCount?: number;
+}>) {
+  return (
+    <div className="space-y-2">
+      <div className={`${headerClassName} animate-pulse`} />
+      {Array.from({ length: rowCount }, (_, index) => (
+        <div key={index} className={`${rowClassName} animate-pulse`} />
+      ))}
+    </div>
+  );
+}
+
+function renderModalHistoryContent(
+  isLoading: boolean,
+  error: string | undefined,
+  changes: ForecastAuditChange[],
+) {
+  if (isLoading && changes.length === 0) {
+    return <AuditHistoryLoadingSkeleton />;
+  }
+  if (error) {
+    return <div className="text-[11px] font-semibold text-rose-600">{error}</div>;
+  }
+  if (changes.length === 0) {
+    return (
+      <div className="text-[11px] font-semibold text-slate-500">
+        No saved changes for this cell yet.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2.5">
+      {changes.map(change => (
+        <div key={change.id}>
+          <ForecastAuditChangeCard change={change} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function renderTooltipPreviewSection(
+  state: AuditTooltipState,
+  previewChanges: ForecastAuditChange[],
+  totalChanges: number,
+  isFullHistoryOpen: boolean,
+  onOpenFullHistory: () => void | Promise<void>,
+) {
+  if (state.isLoading && previewChanges.length === 0 && !state.data) {
+    return (
+      <AuditHistoryLoadingSkeleton
+        headerClassName="h-3 w-28 rounded bg-slate-200"
+        rowClassName="h-10 rounded bg-slate-100"
+        rowCount={2}
+      />
+    );
+  }
+  if (state.error && !isFullHistoryOpen) {
+    return <div className="text-[11px] font-semibold text-rose-600">{state.error}</div>;
+  }
+  if (totalChanges === 0) {
+    return (
+      <div className="text-[11px] font-semibold text-slate-500">
+        No saved changes for this cell yet.
+      </div>
+    );
+  }
+  return (
+    <>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          Total changes: <span className="text-blue-700">{totalChanges}</span>
+        </div>
+        <button
+          type="button"
+          onClick={onOpenFullHistory}
+          className="inline-flex shrink-0 items-center gap-1 rounded-full border border-blue-200/80 bg-white px-2.5 py-1 text-[9px] font-bold text-blue-700 shadow-sm transition hover:border-blue-300 hover:bg-blue-50"
+        >
+          <span>All history</span>
+          <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden="true">
+            <path
+              d="M6 3.5 10.5 8 6 12.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
+      <div className="space-y-2">
+        {previewChanges.map(change => (
+          <div key={change.id}>
+            <ForecastAuditChangeCard change={change} />
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function ForecastAuditChangeCard({ change }: Readonly<{ change: ForecastAuditChange }>) {
   return (
     <div className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2.5">
       <div className="flex items-center justify-between gap-2">
@@ -935,18 +1065,34 @@ function ForecastAuditHistoryModal({
   isLoading,
   error,
   onClose,
-}: {
+}: Readonly<{
   state: AuditTooltipState;
   changes: ForecastAuditChange[];
   isLoading: boolean;
   error?: string;
   onClose: () => void;
-}) {
+}>) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const totalChanges = state.data?.totalChanges ?? changes.length;
 
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog || dialog.open) return;
+    dialog.showModal();
+    return () => {
+      if (dialog.open) dialog.close();
+    };
+  }, []);
+
   return createPortal(
-    <div
-      className="fixed inset-0 z-[120] flex items-center justify-center p-4"
+    <dialog
+      ref={dialogRef}
+      className="fixed inset-0 z-[120] m-0 flex h-full max-h-none w-full max-w-none items-center justify-center border-0 bg-transparent p-4 open:flex"
+      aria-labelledby="forecast-audit-history-title"
+      onCancel={event => {
+        event.preventDefault();
+        onClose();
+      }}
       onMouseDown={event => event.stopPropagation()}
     >
       <button
@@ -955,12 +1101,7 @@ function ForecastAuditHistoryModal({
         aria-label="Close full forecast history"
         onClick={onClose}
       />
-      <div
-        className="relative flex max-h-[min(560px,78vh)] w-full max-w-[440px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="forecast-audit-history-title"
-      >
+      <div className="relative flex max-h-[min(560px,78vh)] w-full max-w-[440px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
         <div className="border-b border-slate-100 bg-gradient-to-r from-slate-50 to-blue-50/40 px-4 py-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -991,29 +1132,10 @@ function ForecastAuditHistoryModal({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          {isLoading && changes.length === 0 ? (
-            <div className="space-y-2">
-              <div className="h-3 w-32 animate-pulse rounded bg-slate-200" />
-              <div className="h-12 animate-pulse rounded-lg bg-slate-100" />
-              <div className="h-12 animate-pulse rounded-lg bg-slate-100" />
-              <div className="h-12 animate-pulse rounded-lg bg-slate-100" />
-            </div>
-          ) : error ? (
-            <div className="text-[11px] font-semibold text-rose-600">{error}</div>
-          ) : changes.length === 0 ? (
-            <div className="text-[11px] font-semibold text-slate-500">No saved changes for this cell yet.</div>
-          ) : (
-            <div className="space-y-2.5">
-              {changes.map(change => (
-                <div key={change.id}>
-                  <ForecastAuditChangeCard change={change} />
-                </div>
-              ))}
-            </div>
-          )}
+          {renderModalHistoryContent(isLoading, error, changes)}
         </div>
       </div>
-    </div>,
+    </dialog>,
     document.body
   );
 }
@@ -1027,7 +1149,7 @@ function ForecastAuditTooltip({
   onClose,
   onCancelClose,
   onShowAll,
-}: {
+}: Readonly<{
   state: AuditTooltipState;
   syncedValue: number;
   selectedDimension: Dimension;
@@ -1036,11 +1158,11 @@ function ForecastAuditTooltip({
   onClose: () => void;
   onCancelClose: () => void;
   onShowAll: () => void | Promise<void>;
-}) {
+}>) {
   const [draftValue, setDraftValue] = useState(formatEditableInputValue(syncedValue));
   const [isFocused, setIsFocused] = useState(false);
   const [isFullHistoryOpen, setIsFullHistoryOpen] = useState(false);
-  const commitTimerRef = useRef<number | null>(null);
+  const commitTimerRef = useRef<TimeoutHandle | null>(null);
   const lastCommittedRef = useRef(syncedValue);
 
   const totalChanges = state.data?.totalChanges ?? 0;
@@ -1059,13 +1181,6 @@ function ForecastAuditTooltip({
     setIsFullHistoryOpen(false);
   };
 
-  const clearScheduledCommit = () => {
-    if (commitTimerRef.current !== null) {
-      window.clearTimeout(commitTimerRef.current);
-      commitTimerRef.current = null;
-    }
-  };
-
   useEffect(() => {
     if (!isFocused) {
       lastCommittedRef.current = syncedValue;
@@ -1073,7 +1188,7 @@ function ForecastAuditTooltip({
     }
   }, [isFocused, syncedValue, state.key]);
 
-  useEffect(() => () => clearScheduledCommit(), []);
+  useEffect(() => () => clearScheduledTimeout(commitTimerRef), []);
 
   const commitValue = (nextValue: string) => {
     const parsed = parseEditableInputValue(nextValue);
@@ -1084,15 +1199,11 @@ function ForecastAuditTooltip({
   };
 
   const scheduleCommit = (nextValue: string) => {
-    clearScheduledCommit();
-    commitTimerRef.current = window.setTimeout(() => {
-      commitTimerRef.current = null;
-      commitValue(nextValue);
-    }, INPUT_COMMIT_DELAY_MS);
+    scheduleDelayedCommit(commitTimerRef, nextValue, commitValue);
   };
 
-  const top = Math.min(window.innerHeight - 260, Math.max(12, state.rect.top + 24));
-  const left = Math.min(window.innerWidth - 360, Math.max(12, state.rect.right - 340));
+  const top = Math.min(globalThis.innerHeight - 260, Math.max(12, state.rect.top + 24));
+  const left = Math.min(globalThis.innerWidth - 360, Math.max(12, state.rect.right - 340));
 
   return (
     <>
@@ -1123,13 +1234,13 @@ function ForecastAuditTooltip({
               setIsFocused(true);
             }}
             onBlur={() => {
-              clearScheduledCommit();
+              clearScheduledTimeout(commitTimerRef);
               setIsFocused(false);
               commitValue(draftValue);
             }}
             onKeyDown={event => {
               if (event.key === 'Enter') {
-                clearScheduledCommit();
+                clearScheduledTimeout(commitTimerRef);
                 commitValue(draftValue);
                 event.currentTarget.blur();
               }
@@ -1163,48 +1274,12 @@ function ForecastAuditTooltip({
       </div>
 
       <div className="max-h-[280px] overflow-auto p-3">
-        {state.isLoading && previewChanges.length === 0 && !state.data ? (
-          <div className="space-y-2">
-            <div className="h-3 w-28 animate-pulse rounded bg-slate-200" />
-            <div className="h-10 animate-pulse rounded bg-slate-100" />
-            <div className="h-10 animate-pulse rounded bg-slate-100" />
-          </div>
-        ) : state.error && !isFullHistoryOpen ? (
-          <div className="text-[11px] font-semibold text-rose-600">{state.error}</div>
-        ) : totalChanges === 0 ? (
-          <div className="text-[11px] font-semibold text-slate-500">No saved changes for this cell yet.</div>
-        ) : (
-          <>
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                Total changes: <span className="text-blue-700">{totalChanges}</span>
-              </div>
-              <button
-                type="button"
-                onClick={handleOpenFullHistory}
-                className="inline-flex shrink-0 items-center gap-1 rounded-full border border-blue-200/80 bg-white px-2.5 py-1 text-[9px] font-bold text-blue-700 shadow-sm transition hover:border-blue-300 hover:bg-blue-50"
-              >
-                <span>All history</span>
-                <svg viewBox="0 0 16 16" className="h-3 w-3" aria-hidden="true">
-                  <path
-                    d="M6 3.5 10.5 8 6 12.5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-            </div>
-            <div className="space-y-2">
-              {previewChanges.map(change => (
-                <div key={change.id}>
-                  <ForecastAuditChangeCard change={change} />
-                </div>
-              ))}
-            </div>
-          </>
+        {renderTooltipPreviewSection(
+          state,
+          previewChanges,
+          totalChanges,
+          isFullHistoryOpen,
+          handleOpenFullHistory,
         )}
       </div>
     </div>
@@ -1230,7 +1305,7 @@ const ForecastEditableCell = React.memo(function ForecastEditableCell({
   onForecastChange,
   onFixedPriceChange,
   onLiveValueChange,
-}: {
+}: Readonly<{
   value: number;
   identityKey: string;
   regId: string;
@@ -1239,24 +1314,17 @@ const ForecastEditableCell = React.memo(function ForecastEditableCell({
   onForecastChange: (regId: string, month: string, value: number) => void;
   onFixedPriceChange: (regId: string, month: string, price: number) => void;
   onLiveValueChange: (draft: LiveDraftValue) => void;
-}) {
+}>) {
   const [draftValue, setDraftValue] = useState(formatEditableInputValue(value));
   const [isFocused, setIsFocused] = useState(false);
   const previousIdentityRef = useRef(identityKey);
-  const commitTimerRef = useRef<number | null>(null);
+  const commitTimerRef = useRef<TimeoutHandle | null>(null);
   const lastCommittedNumberRef = useRef(value);
-
-  const clearScheduledCommit = () => {
-    if (commitTimerRef.current !== null) {
-      window.clearTimeout(commitTimerRef.current);
-      commitTimerRef.current = null;
-    }
-  };
 
   useEffect(() => {
     if (previousIdentityRef.current !== identityKey) {
       previousIdentityRef.current = identityKey;
-      clearScheduledCommit();
+      clearScheduledTimeout(commitTimerRef);
       lastCommittedNumberRef.current = value;
       setDraftValue(formatEditableInputValue(value));
       return;
@@ -1282,14 +1350,10 @@ const ForecastEditableCell = React.memo(function ForecastEditableCell({
   };
 
   const scheduleCommit = (nextValue: string) => {
-    clearScheduledCommit();
-    commitTimerRef.current = window.setTimeout(() => {
-      commitTimerRef.current = null;
-      commitValue(nextValue);
-    }, INPUT_COMMIT_DELAY_MS);
+    scheduleDelayedCommit(commitTimerRef, nextValue, commitValue);
   };
 
-  useEffect(() => () => clearScheduledCommit(), []);
+  useEffect(() => () => clearScheduledTimeout(commitTimerRef), []);
 
   return (
     <input
@@ -1297,13 +1361,13 @@ const ForecastEditableCell = React.memo(function ForecastEditableCell({
       value={draftValue}
       onFocus={() => setIsFocused(true)}
       onBlur={() => {
-        clearScheduledCommit();
+        clearScheduledTimeout(commitTimerRef);
         setIsFocused(false);
         commitValue(draftValue);
       }}
       onKeyDown={e => {
         if (e.key === 'Enter') {
-          clearScheduledCommit();
+          clearScheduledTimeout(commitTimerRef);
           commitValue(draftValue);
           e.currentTarget.blur();
         }
