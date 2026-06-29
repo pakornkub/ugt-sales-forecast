@@ -699,6 +699,7 @@ function ImportPreviewModal({
                         <th className="p-2 text-left">Enduser</th>
                         <th className="p-2 text-left">Plant</th>
                         <th className="p-2 text-left">Material</th>
+                        <th className="p-2 text-left">BU</th>
                         <th className="p-2 text-left">On/Off</th>
                         <th className="p-2 text-left">Process</th>
                         <th className="p-2 text-left">Application</th>
@@ -739,6 +740,7 @@ function ImportPreviewModal({
                           <td className="p-2 max-w-[180px] truncate" title={row.enduser ?? undefined}>{row.enduser ?? 'NULL'}</td>
                           <td className="p-2">{row.plant ?? 'NULL'}</td>
                           <td className="p-2 font-mono">{row.materialCode ?? 'NULL'}</td>
+                          <td className="p-2 font-bold text-sky-700">{row.businessUnit ?? 'NULL'}</td>
                           <td className="p-2">{row.onOff ?? 'NULL'}</td>
                           <td className="p-2">{row.process ?? 'NULL'}</td>
                           <td className="p-2">{row.application ?? 'NULL'}</td>
@@ -750,7 +752,7 @@ function ImportPreviewModal({
                       ))}
                       {unifiedPreviewRows.length === 0 && (
                         <tr>
-                          <td colSpan={16} className="p-6 text-center text-slate-400 text-[10px] font-bold uppercase tracking-widest">
+                          <td colSpan={17} className="p-6 text-center text-slate-400 text-[10px] font-bold uppercase tracking-widest">
                             No Registration or Actual preview rows
                           </td>
                         </tr>

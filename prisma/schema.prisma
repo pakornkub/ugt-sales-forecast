@@ -82,6 +82,20 @@ model CplPrice {
   @@map("cpl_prices")
 }
 
+model PriceManagementValue {
+  month        String   @db.NVarChar(7)
+  priceType    String   @db.NVarChar(10)
+  versionName  String   @db.NVarChar(100)
+  cplPrice     Decimal  @default(0) @db.Decimal(18, 4)
+  naphthaPrice Decimal  @default(0) @db.Decimal(18, 4)
+  benzenePrice Decimal  @default(0) @db.Decimal(18, 4)
+  updatedAt    DateTime @default(now()) @updatedAt
+
+  @@id([month, priceType, versionName])
+  @@index([priceType, versionName, month])
+  @@map("price_management_values")
+}
+
 /// Registrations created inside Sales Forecast. CRM remains read-only.
 model MasterDataCrmRegistration {
   id                          String   @id @default(uuid()) @db.NVarChar(36)
@@ -97,6 +111,7 @@ model MasterDataCrmRegistration {
   onOffSpec                   String   @db.NVarChar(20)
   materialDescription         String   @db.NVarChar(500)
   ownerName                   String   @db.NVarChar(500)
+  businessUnit                String   @default("Composite") @db.NVarChar(50)
   countryName                 String?  @db.NVarChar(500)
   shipToName                  String?  @db.NVarChar(500)
   soldToName                  String?  @db.NVarChar(500)

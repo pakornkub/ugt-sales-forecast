@@ -149,6 +149,7 @@ function createActualOnlyRegistration(row: Record<string, unknown>, registration
     id: registrationId,
     sourceStatus: 'actual_only',
     keyForNoCRM,
+    businessUnit: '',
     ownerName: '',
     registrationTopic: keyForNoCRM,
     onOffSpec: getOnOffFromKey(keyForNoCRM),

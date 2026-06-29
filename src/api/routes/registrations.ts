@@ -3,6 +3,7 @@ import { Router } from 'express';
 import prisma from '../../db/prisma';
 import { clearActualCaches } from './actuals';
 import { getActiveSnapshotVersion } from '../services/dataSnapshot';
+import { businessUnitFromPlantCode, crmBusinessUnitSelectSql } from '../services/businessUnit';
 
 const router = Router();
 const DEFAULT_PAGE_SIZE = 80;
@@ -30,13 +31,14 @@ const managedRegistrationSourceSql = Prisma.sql`
     r.plantName AS PlantName, r.countryCode AS CountryCode, r.endUserCode AS EndUserCode,
     r.endUserExportControl AS EndUserExportControl, r.endUserName AS EndUserName,
     r.productName AS ProductName, r.priceFormula AS PriceFormula, r.spread AS Spread,
-    CAST(1 AS BIT) AS IsManaged
+    r.businessUnit AS BusinessUnit, CAST(1 AS BIT) AS IsManaged
   FROM dbo.master_data_crm_registrations r
   WHERE r.mainRegist = 1
 `;
 
 export async function getRegistrationSourceSql() {
   const snapshotVersion = await getActiveSnapshotVersion();
+  const directCrmBusinessUnitSql = await crmBusinessUnitSelectSql('r', 'BusinessUnit');
   const crmSource = snapshotVersion
     ? Prisma.sql`
       SELECT
@@ -60,7 +62,8 @@ export async function getRegistrationSourceSql() {
         r.countryCode AS CountryCode, r.endUserCode AS EndUserCode,
         r.endUserExportControl AS EndUserExportControl, r.endUserName AS EndUserName,
         r.productName AS ProductName, CAST('' AS NVARCHAR(50)) AS PriceFormula,
-        CAST(0 AS DECIMAL(18,4)) AS Spread, CAST(0 AS BIT) AS IsManaged
+        CAST(0 AS DECIMAL(18,4)) AS Spread, r.businessUnit AS BusinessUnit,
+        CAST(0 AS BIT) AS IsManaged
       FROM dbo.crm_registration_snapshot r
       WHERE r.snapshotVersion = ${snapshotVersion}
     `
@@ -90,6 +93,7 @@ export async function getRegistrationSourceSql() {
     r.EndUserExportControl, r.EndUserName, r.ProductName,
     CAST('' AS NVARCHAR(50)) AS PriceFormula,
     CAST(0 AS DECIMAL(18,4)) AS Spread,
+    ${directCrmBusinessUnitSql},
     CAST(0 AS BIT) AS IsManaged
   FROM [dbo].[VW_CRM_RegistrationAll_1] r
   WHERE r.NewKey IS NOT NULL AND r.MainRegist = 1
@@ -106,6 +110,7 @@ const filterColumns: Record<string, Prisma.Sql> = {
   countryName: Prisma.sql`r.CountryName`,
   materialDescription: Prisma.sql`r.MaterialDescription`,
   materialCode: Prisma.sql`r.MaterialCode`,
+  businessUnit: Prisma.sql`r.BusinessUnit`,
   shipTo_name: Prisma.sql`r.ShipToName`,
   soldTo_name: Prisma.sql`r.SoldToName`,
   end_user: Prisma.sql`r.EndUser`,
@@ -280,6 +285,7 @@ function mapRegistrationRow(row: Record<string, unknown>) {
     keyForNoCRM: String(row.KeyforNoCRM ?? row.keyForNoCRM ?? ''),
     sourceStatus: 'registration_only',
     ownerName: String(row.OwnerName ?? row.ownerName ?? ''),
+    businessUnit: String(row.BusinessUnit ?? row.businessUnit ?? ''),
     registrationTopic: String(row.RegistrationTopic ?? row.registrationTopic ?? ''),
     onOffSpec: String(row.OnOffSpec ?? row.onOffSpec ?? ''),
     plantCode: String(row.PlantCode ?? row.plantCode ?? ''),
@@ -367,6 +373,7 @@ function createData(body: Record<string, unknown>) {
       endUserCode,
       plantCode,
       materialCode,
+      businessUnit: businessUnitFromPlantCode(plantCode),
       onOffSpec,
       materialDescription: text(body.materialDescription),
       ownerName,

@@ -20,14 +20,15 @@ import {
   Box,
   Truck,
   X,
-  LogOut
+  LogOut,
+  Copy
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, addMonths, addDays, getDay, startOfMonth, endOfMonth, parseISO } from 'date-fns';
 import { cn } from './lib/utils';
 import { ForecastInputTable } from './components/forecast/ForecastInputTable';
 import { getForecastCellValue } from './components/forecast/forecastCellUtils';
-import { filterRegistrations, hasActiveColumnFilters } from './components/forecast/forecastFilterUtils';
+import { filterRegistrations } from './components/forecast/forecastFilterUtils';
 import { api, ApiError, type AuthUser, type SnapshotStatus } from './lib/api';
 import type {
   ColumnFiltersState,
@@ -39,6 +40,8 @@ import type {
   ForecastSummaryRequest,
   ForecastValue,
   InventoryRow,
+  PriceManagementRow,
+  PriceManagementType,
   PriceFormula,
   Registration,
   ValueType,
@@ -68,7 +71,10 @@ import { EMPTY_COLUMN_FILTER } from './types/forecast';
 type AppTab = 'forecast' | 'master' | 'dashboard' | 'weekly' | 'monthly' | 'yearly' | 'mtp' | 'pdc' | 'suggestion';
 const FORECAST_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
 const FORECAST_SUMMARY_CACHE_PREFIX = 'forecast-summary:v1:';
+const BU_FILTER_STORAGE_KEY = 'sales-forecast:business-unit-filter:v1';
 const STAMP_PERIOD_OPTIONS = ['No', 'Weekly1', 'Weekly2', 'Weekly3', 'Weekly4', 'Weekly5', 'Monthly1', 'Monthly2'];
+const CURRENT_FORECAST_VERSION = 'Current Forecast';
+const GLOBAL_PRICE_VERSION = 'GLOBAL';
 
 interface PendingForecastEdit {
   registrationId: string;
@@ -87,6 +93,32 @@ interface InventoryCommitPreviewRow {
   delta: number;
   pendingMaterialDelta: number;
   inventory?: InventoryRow;
+}
+
+function priceRowsToCplPrices(rows: PriceManagementRow[]): CPLPrice[] {
+  return rows.map(row => ({ month: row.month, price: row.cplPrice }));
+}
+
+function priceRowsToNaphthaPrices(rows: PriceManagementRow[]): CPLPrice[] {
+  return rows.map(row => ({ month: row.month, price: row.naphthaPrice }));
+}
+
+function priceRowsToBenzenePrices(rows: PriceManagementRow[]): CPLPrice[] {
+  return rows.map(row => ({ month: row.month, price: row.benzenePrice }));
+}
+
+function loadStoredBusinessUnitFilter(): ColumnFiltersState {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(BU_FILTER_STORAGE_KEY);
+    if (!raw) return {};
+    const selectedValues = JSON.parse(raw);
+    if (!Array.isArray(selectedValues)) return {};
+    const values = selectedValues.map(value => String(value).trim()).filter(Boolean);
+    return values.length > 0 ? { businessUnit: { searchText: '', selectedValues: values } } : {};
+  } catch {
+    return {};
+  }
 }
 
 // --- Components ---
@@ -215,11 +247,16 @@ export default function App() {
   const [editingVersionName, setEditingVersionName] = useState('');
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [isAddingCpl, setIsAddingCpl] = useState(false);
+  const [isCopyingPriceVersion, setIsCopyingPriceVersion] = useState(false);
   const [selectedFy, setSelectedFy] = useState(2026);
+  const [priceManagementType, setPriceManagementType] = useState<PriceManagementType>('Fcst');
+  const [priceManagementVersion, setPriceManagementVersion] = useState(CURRENT_FORECAST_VERSION);
+  const [priceManagementRows, setPriceManagementRows] = useState<PriceManagementRow[]>([]);
+  const [copySourceVersion, setCopySourceVersion] = useState(CURRENT_FORECAST_VERSION);
   const cplTableRef = useRef<HTMLDivElement>(null);
   const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [managedRegistrations, setManagedRegistrations] = useState<Registration[]>([]);
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>({});
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>(() => loadStoredBusinessUnitFilter());
   const [forecastData, setForecastData] = useState<ForecastValue[]>([]);
   const forecastDataRef = useRef<ForecastValue[]>([]);
   const forecastPositionRef = useRef(new Map<string, number>());
@@ -245,14 +282,14 @@ export default function App() {
   const [cplPrices, setCplPrices] = useState<CPLPrice[]>([]);
   const [naphthaprices, setNaphthaprices] = useState<CPLPrice[]>([]);
   const [benzeneprices, setBenzeneprices] = useState<CPLPrice[]>([]);
-  const [versions, setVersions] = useState<string[]>(['Current Forecast']);
-  const [selectedVersion, setSelectedVersion] = useState('Current Forecast');
+  const [versions, setVersions] = useState<string[]>([CURRENT_FORECAST_VERSION]);
+  const [selectedVersion, setSelectedVersion] = useState(CURRENT_FORECAST_VERSION);
   const [stampPeriod, setStampPeriod] = useState('No');
   const [planningView, setPlanningView] = useState<'sale' | 'accounting' | 'production'>('sale');
   const [selectedDimension, setSelectedDimension] = useState<Dimension>('Qty');
   const [selectedType, setSelectedType] = useState<ValueType>('Fcst');
   const [forecastMode, setForecastMode] = useState<'month' | 'week' | 'day'>('month');
-  const isCurrentForecastVersion = selectedVersion === 'Current Forecast';
+  const isCurrentForecastVersion = selectedVersion === CURRENT_FORECAST_VERSION;
   const [formulaMap, setFormulaMap] = useState<Map<string, PriceFormula>>(new Map());
   const handleFormulaChange = useCallback((regId: string, formula: PriceFormula) => {
     setFormulaMap(prev => new Map(prev).set(regId, formula));
@@ -457,6 +494,40 @@ export default function App() {
     () => JSON.stringify(serverRegistrationFilters),
     [serverRegistrationFilters]
   );
+  useEffect(() => {
+    try {
+      const selectedValues = columnFilters.businessUnit?.selectedValues ?? [];
+      if (selectedValues.length > 0) {
+        window.localStorage.setItem(BU_FILTER_STORAGE_KEY, JSON.stringify(selectedValues));
+      } else {
+        window.localStorage.removeItem(BU_FILTER_STORAGE_KEY);
+      }
+    } catch {
+      // Local storage is optional; filters still work without persistence.
+    }
+  }, [columnFilters.businessUnit?.selectedValues]);
+  const businessUnitFilterValues = columnFilters.businessUnit?.selectedValues ?? [];
+  const nonBusinessUnitFilterCount = useMemo(
+    () => (Object.entries(columnFilters) as Array<[string, ColumnFilterValue]>)
+      .filter(([key, filter]) => key !== 'businessUnit' && filter.selectedValues.length > 0)
+      .length,
+    [columnFilters]
+  );
+  const clearNonBusinessUnitFilters = useCallback(() => {
+    setColumnFilters(previous => {
+      const businessUnitFilter = previous.businessUnit;
+      return businessUnitFilter?.selectedValues.length
+        ? { businessUnit: businessUnitFilter }
+        : {};
+    });
+  }, []);
+  const clearBusinessUnitFilter = useCallback(() => {
+    setColumnFilters(previous => {
+      const next = { ...previous };
+      delete next.businessUnit;
+      return next;
+    });
+  }, []);
   const loadFilterOptions = useCallback(
     (columnKey: string, search: string, cursor?: string | null) =>
       api.registrations.filterOptions(
@@ -553,6 +624,9 @@ export default function App() {
         setSelectedVersion(previous =>
           allVers.includes(previous) ? previous : allVers[0]
         );
+        setPriceManagementVersion(previous =>
+          allVers.includes(previous) ? previous : allVers[0]
+        );
         if (generation !== registrationLoadGenerationRef.current) return;
         setRegistrations(registrationPage.items);
         setManagedRegistrations(managed);
@@ -587,7 +661,7 @@ export default function App() {
         if (!cancelled && !controller.signal.aborted) {
           const msg = err instanceof ApiError ? err.message : 'Failed to load data. Is the API server running?';
           setAppError(msg);
-          setVersions(['Current Forecast']);
+          setVersions([CURRENT_FORECAST_VERSION]);
         }
       } finally {
         if (!cancelled) setIsLoading(false);
@@ -606,40 +680,99 @@ export default function App() {
     if (activeTab !== 'master') return;
 
     let cancelled = false;
+    const controller = new AbortController();
     async function loadPriceManagement() {
       try {
-        const prices = await api.cpl.list(selectedFy);
+        const versionForQuery = priceManagementType === 'Actual'
+          ? GLOBAL_PRICE_VERSION
+          : priceManagementVersion;
+        const result = await api.priceManagement.list(
+          selectedFy,
+          priceManagementType,
+          versionForQuery,
+          controller.signal
+        );
         if (cancelled) return;
 
-        setCplPrices(prices);
-        setNaphthaprices(previous => {
-          const pricesByMonth = new Map(previous.map(item => [item.month, item.price]));
-          return prices.map(item => ({
-            month: item.month,
-            price: pricesByMonth.get(item.month) ?? 0,
-          }));
-        });
-        setBenzeneprices(previous => {
-          const pricesByMonth = new Map(previous.map(item => [item.month, item.price]));
-          return prices.map(item => ({
-            month: item.month,
-            price: pricesByMonth.get(item.month) ?? 0,
-          }));
-        });
+        setPriceManagementRows(result.rows);
         setAppError(null);
       } catch (err) {
-        if (!cancelled) {
-          const message = err instanceof ApiError
-            ? err.message
-            : 'Failed to load Price Management data';
-          setAppError(message);
+        if (!cancelled && !controller.signal.aborted) {
+          try {
+            const legacyPrices = await api.cpl.list(selectedFy);
+            if (cancelled || controller.signal.aborted) return;
+            setPriceManagementRows(legacyPrices.map(price => ({
+              month: price.month,
+              cplPrice: price.price,
+              naphthaPrice: 0,
+              benzenePrice: 0,
+            })));
+            setAppError(null);
+          } catch (fallbackErr) {
+            const message = fallbackErr instanceof ApiError
+              ? fallbackErr.message
+              : err instanceof ApiError
+                ? err.message
+                : 'Failed to load Price Management data';
+            setAppError(message);
+          }
         }
       }
     }
 
     loadPriceManagement();
-    return () => { cancelled = true; };
-  }, [activeTab, selectedFy]);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [activeTab, priceManagementType, priceManagementVersion, selectedFy]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    async function loadForecastPrices() {
+      try {
+        const result = await api.priceManagement.listRange(
+          dateRange.start.slice(0, 7),
+          dateRange.end.slice(0, 7),
+          selectedVersion,
+          controller.signal
+        );
+        if (cancelled) return;
+        setCplPrices(priceRowsToCplPrices(result.rows));
+        setNaphthaprices(priceRowsToNaphthaPrices(result.rows));
+        setBenzeneprices(priceRowsToBenzenePrices(result.rows));
+      } catch (err) {
+        if (!cancelled && !controller.signal.aborted) {
+          try {
+            const legacyPrices = await api.cpl.list();
+            if (cancelled || controller.signal.aborted) return;
+            const startMonth = dateRange.start.slice(0, 7);
+            const endMonth = dateRange.end.slice(0, 7);
+            const cplFallback = legacyPrices
+              .filter(price => price.month >= startMonth && price.month <= endMonth)
+              .sort((a, b) => a.month.localeCompare(b.month));
+            setCplPrices(cplFallback);
+            setNaphthaprices(cplFallback.map(price => ({ month: price.month, price: 0 })));
+            setBenzeneprices(cplFallback.map(price => ({ month: price.month, price: 0 })));
+            setAppError(null);
+          } catch (fallbackErr) {
+            const message = fallbackErr instanceof ApiError
+              ? fallbackErr.message
+              : err instanceof ApiError
+                ? err.message
+                : 'Failed to load forecast prices';
+            setAppError(message);
+          }
+        }
+      }
+    }
+    loadForecastPrices();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [dateRange.end, dateRange.start, selectedVersion]);
 
   const loadMoreRegistrations = useCallback(async () => {
     if (isLoadingMoreRef.current || !hasMoreRegistrations || !registrationCursor) return;
@@ -1191,23 +1324,26 @@ export default function App() {
   const filteredCplPrices = useMemo(() => {
     const fyStart = `${selectedFy}-04`;
     const fyEnd = `${selectedFy + 1}-03`;
-    return cplPrices.filter(c => c.month >= fyStart && c.month <= fyEnd)
+    return priceManagementRows.map(row => ({ month: row.month, price: row.cplPrice }))
+      .filter(c => c.month >= fyStart && c.month <= fyEnd)
       .sort((a, b) => a.month.localeCompare(b.month));
-  }, [cplPrices, selectedFy]);
+  }, [priceManagementRows, selectedFy]);
 
   const filteredNaphtha = useMemo(() => {
     const fyStart = `${selectedFy}-04`;
     const fyEnd = `${selectedFy + 1}-03`;
-    return naphthaprices.filter(c => c.month >= fyStart && c.month <= fyEnd)
+    return priceManagementRows.map(row => ({ month: row.month, price: row.naphthaPrice }))
+      .filter(c => c.month >= fyStart && c.month <= fyEnd)
       .sort((a, b) => a.month.localeCompare(b.month));
-  }, [naphthaprices, selectedFy]);
+  }, [priceManagementRows, selectedFy]);
 
   const filteredBenzene = useMemo(() => {
     const fyStart = `${selectedFy}-04`;
     const fyEnd = `${selectedFy + 1}-03`;
-    return benzeneprices.filter(c => c.month >= fyStart && c.month <= fyEnd)
+    return priceManagementRows.map(row => ({ month: row.month, price: row.benzenePrice }))
+      .filter(c => c.month >= fyStart && c.month <= fyEnd)
       .sort((a, b) => a.month.localeCompare(b.month));
-  }, [benzeneprices, selectedFy]);
+  }, [priceManagementRows, selectedFy]);
 
   const handleForecastChange = useCallback((regId: string, month: string, value: number) => {
     const editKey = `${regId}|${selectedVersion}|${month}`;
@@ -1280,6 +1416,7 @@ export default function App() {
       const registration = registrationsById.get(edit.registrationId);
       const fallbackRegistration: Registration = registration ?? {
         id: edit.registrationId,
+        businessUnit: '',
         ownerName: '',
         registrationTopic: edit.registrationId,
         onOffSpec: '',
@@ -1578,6 +1715,44 @@ export default function App() {
     event.preventDefault();
     event.currentTarget.select();
   };
+
+  const updatePriceManagementCell = useCallback((
+    month: string,
+    field: keyof Omit<PriceManagementRow, 'month'>,
+    value: number
+  ) => {
+    setPriceManagementRows(previous => {
+      const exists = previous.some(row => row.month === month);
+      const nextRows = exists
+        ? previous.map(row => row.month === month ? { ...row, [field]: value } : row)
+        : [...previous, { month, cplPrice: 0, naphthaPrice: 0, benzenePrice: 0, [field]: value }];
+      return nextRows.sort((a, b) => a.month.localeCompare(b.month));
+    });
+  }, []);
+
+  const handleSavePriceManagement = useCallback(async () => {
+    loadStart();
+    setIsSaving(true);
+    try {
+      await api.priceManagement.saveBulk(
+        priceManagementType,
+        priceManagementType === 'Actual' ? GLOBAL_PRICE_VERSION : priceManagementVersion,
+        priceManagementRows
+      );
+      if (priceManagementType === 'Fcst' && priceManagementVersion === selectedVersion) {
+        setCplPrices(priceRowsToCplPrices(priceManagementRows));
+        setNaphthaprices(priceRowsToNaphthaPrices(priceManagementRows));
+        setBenzeneprices(priceRowsToBenzenePrices(priceManagementRows));
+      }
+      setAppError(null);
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Failed to save price management data';
+      setAppError(msg);
+    } finally {
+      setIsSaving(false);
+      loadDone();
+    }
+  }, [loadDone, loadStart, priceManagementRows, priceManagementType, priceManagementVersion, selectedVersion]);
 
   const displayUserName = authUser?.name || authUser?.email || 'User';
   const userInitials = displayUserName
@@ -2105,16 +2280,35 @@ export default function App() {
                   </div>
                 </FilterGroup>
 
-            <div className="flex items-center justify-end gap-2 text-blue-600">
-              {hasActiveColumnFilters(columnFilters) && (
-                <button 
-                  onClick={() => setColumnFilters({})}
-                  className="text-[10px] font-bold uppercase underline hover:text-blue-800 transition-colors px-2"
-                >
-                  Clear Filters
-                </button>
-              )}
-            </div>
+            {(nonBusinessUnitFilterCount > 0 || businessUnitFilterValues.length > 0) && (
+              <div className="flex items-center justify-end gap-2">
+                {businessUnitFilterValues.length > 0 && (
+                  <div className="flex h-8 items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 text-[10px] font-bold uppercase tracking-wide text-blue-700">
+                    <span>BU: {businessUnitFilterValues.join(', ')}</span>
+                    <button
+                      type="button"
+                      onClick={clearBusinessUnitFilter}
+                      className="flex h-4 w-4 items-center justify-center rounded-full bg-white text-blue-400 transition-colors hover:text-red-500"
+                      aria-label="Clear BU filter"
+                      title="Clear BU filter"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                )}
+                {nonBusinessUnitFilterCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearNonBusinessUnitFilters}
+                    className="flex h-8 items-center gap-2 rounded-full border border-slate-200 bg-white px-3 text-[10px] font-black uppercase tracking-wide text-slate-500 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                    title="Clear filters but keep BU"
+                  >
+                    <X size={12} />
+                    Clear {nonBusinessUnitFilterCount} Filter{nonBusinessUnitFilterCount === 1 ? '' : 's'}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
           </div>
         </header>
@@ -2122,8 +2316,8 @@ export default function App() {
 
       {activeTab === 'master' && (
         <header className="h-[115px] bg-white border-b border-slate-200 p-4 flex flex-col justify-center shrink-0 shadow-sm z-40">
-          <div className="flex items-end justify-between max-w-[1400px] w-full">
-            <div className="flex gap-4">
+          <div className="flex items-end justify-between gap-4 w-full">
+            <div className="flex items-end gap-4 min-w-0">
               <FilterGroup label="Fiscal Year (FY)">
                 <div className="relative">
                   <select 
@@ -2140,14 +2334,61 @@ export default function App() {
                   </div>
                 </div>
               </FilterGroup>
-              
-              <div className="flex flex-col justify-end pb-[2px]">
-                <h2 className="text-sm font-bold text-slate-700 tracking-tight">Price Management</h2>
-                <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest">Global Master Data Management</p>
-              </div>
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex items-end gap-4 shrink-0">
+              <FilterGroup label="Price Type">
+                <div className="bg-slate-100 p-1 rounded-xl flex shadow-inner">
+                  {(['Actual', 'Fcst'] as PriceManagementType[]).map(type => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => { flash(); setPriceManagementType(type); }}
+                      className={cn(
+                        "px-5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all",
+                        priceManagementType === type
+                          ? "bg-white text-blue-600 shadow-sm"
+                          : "text-slate-500 hover:text-slate-700"
+                      )}
+                    >
+                      {type === 'Actual' ? 'ACT' : 'FCST'}
+                    </button>
+                  ))}
+                </div>
+              </FilterGroup>
+
+              <FilterGroup label="Forecast Version">
+                <div className="relative">
+                  <select
+                    value={priceManagementVersion}
+                    disabled={priceManagementType === 'Actual'}
+                    onChange={e => { flash(); setPriceManagementVersion(e.target.value); }}
+                    className="sf-select w-52 text-xs border rounded p-1.5 outline-none appearance-none pr-8 transition-colors shadow-sm disabled:bg-slate-100 disabled:text-slate-400"
+                  >
+                    {versions.map(version => (
+                      <option key={version} value={version}>{version}</option>
+                    ))}
+                  </select>
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-blue-400">
+                    <ChevronRight size={14} className="rotate-90" />
+                  </div>
+                </div>
+              </FilterGroup>
+
+              {priceManagementType === 'Fcst' && (
+                <button
+                  onClick={() => {
+                    const firstSource = versions.find(version => version !== priceManagementVersion) ?? CURRENT_FORECAST_VERSION;
+                    setCopySourceVersion(firstSource);
+                    setIsCopyingPriceVersion(true);
+                  }}
+                  disabled={versions.length < 2}
+                  className="bg-white hover:bg-blue-50 text-blue-600 border border-blue-100 text-[10px] font-bold py-2 px-4 rounded-lg shadow-sm flex items-center gap-1 uppercase tracking-wider transition-all active:scale-95 disabled:opacity-50"
+                >
+                  <Copy size={12} />
+                  Copy
+                </button>
+              )}
               <button 
                 onClick={() => setIsAddingCpl(true)}
                 className="bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold py-2 px-4 rounded-lg shadow-sm flex items-center gap-1 uppercase tracking-wider transition-all active:scale-95"
@@ -2158,10 +2399,10 @@ export default function App() {
               <button 
                 onClick={async () => {
                   const XLSX = await import('xlsx');
-                  const worksheet = XLSX.utils.json_to_sheet(filteredCplPrices);
+                  const worksheet = XLSX.utils.json_to_sheet(priceManagementRows);
                   const workbook = XLSX.utils.book_new();
-                  XLSX.utils.book_append_sheet(workbook, worksheet, `CPL_FY${String(selectedFy).slice(-2)}`);
-                  XLSX.writeFile(workbook, `CPL_FY${String(selectedFy).slice(-2)}_${format(new Date(), 'yyyyMMdd')}.xlsx`);
+                  XLSX.utils.book_append_sheet(workbook, worksheet, `PRICE_FY${String(selectedFy).slice(-2)}`);
+                  XLSX.writeFile(workbook, `Price_${priceManagementType}_${priceManagementVersion}_FY${String(selectedFy).slice(-2)}_${format(new Date(), 'yyyyMMdd')}.xlsx`);
                 }}
                 className="bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10px] font-bold py-2 px-4 rounded-lg shadow-sm flex items-center gap-1 uppercase tracking-wider transition-all active:scale-95"
               >
@@ -2298,24 +2539,24 @@ export default function App() {
                 className="flex-1 flex flex-col overflow-hidden"
               >
                 <div ref={cplTableRef} className="flex-1 overflow-auto">
-                  <table className="w-full border-collapse table-fixed min-w-[1100px]">
+                  <table className="w-full border-collapse table-fixed min-w-[980px]">
                     <thead className="sticky top-0 z-20 bg-slate-100">
                       <tr className="divide-x divide-slate-200">
-                        <th className="w-[12%] p-4 text-[10px] font-black uppercase text-slate-400 text-left">Month</th>
-                        <th className="w-[18%] p-4 text-[10px] font-black uppercase text-slate-400 text-left">Period Description</th>
-                        <th className="w-[20%] p-4 text-[10px] font-black uppercase text-slate-400 text-right tracking-widest">CPL (USD/Ton)</th>
-                        <th className="w-[20%] p-4 text-[10px] font-black uppercase text-slate-400 text-right tracking-widest">Naphtha (USD/Ton)</th>
-                        <th className="w-[20%] p-4 text-[10px] font-black uppercase text-slate-400 text-right tracking-widest">Benzene (USD/Ton)</th>
-                        <th className="w-[10%] p-4 text-[10px] font-black uppercase text-slate-400 text-center tracking-widest">Actions</th>
+                        <th className="w-[12%] px-4 py-3 text-[10px] font-black uppercase text-slate-400 text-left">Month</th>
+                        <th className="w-[18%] px-4 py-3 text-[10px] font-black uppercase text-slate-400 text-left">Period Description</th>
+                        <th className="w-[20%] px-4 py-3 text-[10px] font-black uppercase text-slate-400 text-right tracking-widest">CPL (USD/Ton)</th>
+                        <th className="w-[20%] px-4 py-3 text-[10px] font-black uppercase text-slate-400 text-right tracking-widest">Naphtha (USD/Ton)</th>
+                        <th className="w-[20%] px-4 py-3 text-[10px] font-black uppercase text-slate-400 text-right tracking-widest">Benzene (USD/Ton)</th>
+                        <th className="w-[10%] px-4 py-3 text-[10px] font-black uppercase text-slate-400 text-center tracking-widest">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-xs font-semibold">
                       {filteredCplPrices.map(cpl => (
                         <tr key={cpl.month} className="divide-x divide-slate-50 hover:bg-slate-50/50 transition group">
-                          <td className="p-4 font-mono text-slate-400 uppercase group-hover:text-blue-600 transition-colors">{cpl.month}</td>
-                          <td className="p-4 text-slate-700 font-bold">{format(parseISO(cpl.month + '-01'), 'MMMM yyyy')}</td>
-                          <td className="p-4 bg-blue-50/10">
-                            <div className="flex items-center justify-end gap-2">
+                          <td className="px-4 py-3 font-mono text-slate-400 uppercase group-hover:text-blue-600 transition-colors">{cpl.month}</td>
+                          <td className="px-4 py-3 text-slate-700 font-bold">{format(parseISO(cpl.month + '-01'), 'MMMM yyyy')}</td>
+                          <td className="px-4 py-3 bg-blue-50/10">
+                            <div className="flex items-center justify-end gap-1.5">
                               <span className="text-slate-300">$</span>
                               <input
                                 type="number"
@@ -2324,14 +2565,14 @@ export default function App() {
                                 onMouseUp={keepZeroPriceSelected}
                                 onChange={e => {
                                   const val = Number(e.target.value);
-                                  setCplPrices(prev => prev.map(p => p.month === cpl.month ? { ...p, price: val } : p));
+                                  updatePriceManagementCell(cpl.month, 'cplPrice', val);
                                 }}
-                                className="bg-white border border-slate-200 group-hover:border-blue-400 rounded-lg px-3 py-1.5 font-mono font-bold text-lg text-right w-40 focus:ring-4 focus:ring-blue-100 outline-none transition-all shadow-sm"
+                                className="bg-white border border-slate-200 group-hover:border-blue-400 rounded-md px-3 py-1.5 font-mono font-bold text-base text-right w-32 focus:ring-2 focus:ring-blue-100 outline-none transition-all shadow-sm"
                               />
                             </div>
                           </td>
-                          <td className="p-4 bg-amber-50/10">
-                            <div className="flex items-center justify-end gap-2">
+                          <td className="px-4 py-3 bg-amber-50/10">
+                            <div className="flex items-center justify-end gap-1.5">
                               <span className="text-slate-300">$</span>
                               <input
                                 type="number"
@@ -2340,19 +2581,14 @@ export default function App() {
                                 onMouseUp={keepZeroPriceSelected}
                                 onChange={e => {
                                   const val = Number(e.target.value);
-                                  setNaphthaprices(prev => {
-                                    const exists = prev.some(p => p.month === cpl.month);
-                                    return exists
-                                      ? prev.map(p => p.month === cpl.month ? { ...p, price: val } : p)
-                                      : [...prev, { month: cpl.month, price: val }];
-                                  });
+                                  updatePriceManagementCell(cpl.month, 'naphthaPrice', val);
                                 }}
-                                className="bg-white border border-slate-200 group-hover:border-amber-400 rounded-lg px-3 py-1.5 font-mono font-bold text-lg text-right w-40 focus:ring-4 focus:ring-amber-100 outline-none transition-all shadow-sm"
+                                className="bg-white border border-slate-200 group-hover:border-amber-400 rounded-md px-3 py-1.5 font-mono font-bold text-base text-right w-32 focus:ring-2 focus:ring-amber-100 outline-none transition-all shadow-sm"
                               />
                             </div>
                           </td>
-                          <td className="p-4 bg-emerald-50/10">
-                            <div className="flex items-center justify-end gap-2">
+                          <td className="px-4 py-3 bg-emerald-50/10">
+                            <div className="flex items-center justify-end gap-1.5">
                               <span className="text-slate-300">$</span>
                               <input
                                 type="number"
@@ -2361,29 +2597,26 @@ export default function App() {
                                 onMouseUp={keepZeroPriceSelected}
                                 onChange={e => {
                                   const val = Number(e.target.value);
-                                  setBenzeneprices(prev => {
-                                    const exists = prev.some(p => p.month === cpl.month);
-                                    return exists
-                                      ? prev.map(p => p.month === cpl.month ? { ...p, price: val } : p)
-                                      : [...prev, { month: cpl.month, price: val }];
-                                  });
+                                  updatePriceManagementCell(cpl.month, 'benzenePrice', val);
                                 }}
-                                className="bg-white border border-slate-200 group-hover:border-emerald-400 rounded-lg px-3 py-1.5 font-mono font-bold text-lg text-right w-40 focus:ring-4 focus:ring-emerald-100 outline-none transition-all shadow-sm"
+                                className="bg-white border border-slate-200 group-hover:border-emerald-400 rounded-md px-3 py-1.5 font-mono font-bold text-base text-right w-32 focus:ring-2 focus:ring-emerald-100 outline-none transition-all shadow-sm"
                               />
                             </div>
                           </td>
-                          <td className="p-4 text-center">
+                          <td className="px-4 py-3 text-center">
                             <button 
                               onClick={async () => {
                                 if (confirm(`Remove price for ${cpl.month}?`)) {
                                   try {
                                     loadStart();
-                                    await api.cpl.remove(cpl.month);
-                                    setCplPrices(prev => prev.filter(p => p.month !== cpl.month));
-                                    setNaphthaprices(prev => prev.filter(p => p.month !== cpl.month));
-                                    setBenzeneprices(prev => prev.filter(p => p.month !== cpl.month));
+                                    await api.priceManagement.remove(
+                                      cpl.month,
+                                      priceManagementType,
+                                      priceManagementType === 'Actual' ? GLOBAL_PRICE_VERSION : priceManagementVersion
+                                    );
+                                    setPriceManagementRows(prev => prev.filter(p => p.month !== cpl.month));
                                   } catch (err) {
-                                    const msg = err instanceof ApiError ? err.message : 'Failed to remove CPL price';
+                                    const msg = err instanceof ApiError ? err.message : 'Failed to remove price';
                                     setAppError(msg);
                                   } finally {
                                     loadDone();
@@ -2428,26 +2661,11 @@ export default function App() {
                   <div className="flex items-center gap-4">
                     <span className="text-[10px] text-slate-400 font-serif italic">Viewing FY {String(selectedFy).slice(-2)} · Records: {filteredCplPrices.length}</span>
                     <button 
-                      onClick={async () => {
-                        const btn = document.activeElement as HTMLButtonElement;
-                        const originalText = btn.innerText;
-                        btn.innerText = 'SAVING...';
-                        btn.disabled = true;
-                        loadStart();
-                        setTimeout(() => {
-                          loadDone();
-                          btn.innerText = '✅ SAVED SUCCESSFULLY';
-                          btn.classList.replace('bg-green-600', 'bg-blue-600');
-                          setTimeout(() => {
-                            btn.innerText = originalText;
-                            btn.classList.replace('bg-blue-600', 'bg-green-600');
-                            btn.disabled = false;
-                          }, 2000);
-                        }, 800);
-                      }}
+                      onClick={handleSavePriceManagement}
+                      disabled={isSaving || priceManagementRows.length === 0}
                       className="bg-green-600 hover:bg-green-700 text-white text-[10px] font-bold px-4 py-1.5 rounded shadow-sm transition-all active:scale-95 uppercase tracking-wider disabled:opacity-50"
                     >
-                      Save All Changes
+                      {isSaving ? 'Saving...' : 'Save All Changes'}
                     </button>
                   </div>
                 </div>
@@ -2491,24 +2709,66 @@ export default function App() {
       {isAddingCpl && (
         <AddCplModal 
           fy={selectedFy} 
-          cplPrices={cplPrices}
+          cplPrices={filteredCplPrices}
           onClose={() => setIsAddingCpl(false)} 
-          onAdd={async (month, price) => {
+          onAdd={async (months, price) => {
             try {
               loadStart();
-              await api.cpl.create(month, price);
-              setCplPrices(prev => [...prev, { month, price }].sort((a, b) => a.month.localeCompare(b.month)));
-              setNaphthaprices(prev =>
-                prev.some(p => p.month === month) ? prev : [...prev, { month, price: 0 }].sort((a, b) => a.month.localeCompare(b.month))
+              const existingMonths = new Set(priceManagementRows.map(row => row.month));
+              const rowsToAdd = months
+                .filter(month => !existingMonths.has(month))
+                .map(month => ({
+                  month,
+                  cplPrice: price,
+                  naphthaPrice: 0,
+                  benzenePrice: 0,
+                }));
+              const nextRows = [...priceManagementRows, ...rowsToAdd].sort((a, b) => a.month.localeCompare(b.month));
+              await api.priceManagement.saveBulk(
+                priceManagementType,
+                priceManagementType === 'Actual' ? GLOBAL_PRICE_VERSION : priceManagementVersion,
+                nextRows
               );
-              setBenzeneprices(prev =>
-                prev.some(p => p.month === month) ? prev : [...prev, { month, price: 0 }].sort((a, b) => a.month.localeCompare(b.month))
-              );
+              setPriceManagementRows(nextRows);
               setIsAddingCpl(false);
             } catch (err) {
-              const msg = err instanceof ApiError ? err.message : 'Failed to add CPL price';
+              const msg = err instanceof ApiError ? err.message : 'Failed to add price month';
               setAppError(msg);
             } finally {
+              loadDone();
+            }
+          }}
+        />
+      )}
+
+      {isCopyingPriceVersion && (
+        <CopyPriceVersionModal
+          fy={selectedFy}
+          versions={versions}
+          sourceVersion={copySourceVersion}
+          targetVersion={priceManagementVersion}
+          isSaving={isSaving}
+          onSourceChange={setCopySourceVersion}
+          onClose={() => setIsCopyingPriceVersion(false)}
+          onCopy={async () => {
+            loadStart();
+            setIsSaving(true);
+            try {
+              await api.priceManagement.copy(selectedFy, copySourceVersion, priceManagementVersion);
+              const result = await api.priceManagement.list(selectedFy, 'Fcst', priceManagementVersion);
+              setPriceManagementRows(result.rows);
+              if (priceManagementVersion === selectedVersion) {
+                setCplPrices(priceRowsToCplPrices(result.rows));
+                setNaphthaprices(priceRowsToNaphthaPrices(result.rows));
+                setBenzeneprices(priceRowsToBenzenePrices(result.rows));
+              }
+              setIsCopyingPriceVersion(false);
+              setAppError(null);
+            } catch (err) {
+              const msg = err instanceof ApiError ? err.message : 'Failed to copy price version';
+              setAppError(msg);
+            } finally {
+              setIsSaving(false);
               loadDone();
             }
           }}
@@ -2678,6 +2938,97 @@ function InventoryCommitPreviewModal({
   );
 }
 
+function CopyPriceVersionModal({
+  fy,
+  versions,
+  sourceVersion,
+  targetVersion,
+  isSaving,
+  onSourceChange,
+  onClose,
+  onCopy,
+}: {
+  fy: number;
+  versions: string[];
+  sourceVersion: string;
+  targetVersion: string;
+  isSaving: boolean;
+  onSourceChange: (version: string) => void;
+  onClose: () => void;
+  onCopy: () => void;
+}) {
+  const sourceOptions = versions.filter(version => version !== targetVersion);
+  const selectedSource = sourceOptions.includes(sourceVersion)
+    ? sourceVersion
+    : sourceOptions[0] ?? '';
+
+  useEffect(() => {
+    if (selectedSource && selectedSource !== sourceVersion) onSourceChange(selectedSource);
+  }, [onSourceChange, selectedSource, sourceVersion]);
+
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/35 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex items-start justify-between border-b border-slate-100 bg-white px-6 py-5">
+          <div>
+            <h3 className="text-lg font-black tracking-tight text-slate-900">Copy Forecast Price</h3>
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              FY {String(fy).slice(-2)} · Overwrite target version
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-white hover:text-slate-700"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <div className="space-y-4 px-6 py-5">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Target Version</p>
+            <p className="mt-1 text-sm font-bold text-slate-800">{targetVersion}</p>
+          </div>
+          <FilterGroup label="Copy From Version">
+            <div className="relative">
+              <select
+                value={selectedSource}
+                onChange={event => onSourceChange(event.target.value)}
+                className="sf-select h-11 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 pr-9 text-sm font-bold text-slate-800 outline-none transition-colors hover:border-blue-200 focus:border-blue-400"
+              >
+                {sourceOptions.map(version => (
+                  <option key={version} value={version}>{version}</option>
+                ))}
+              </select>
+            </div>
+          </FilterGroup>
+          <p className="text-xs leading-5 text-slate-500">
+            This will overwrite CPL, Naphtha, and Benzene prices for all months in the selected fiscal year.
+          </p>
+        </div>
+        <div className="flex justify-end gap-3 border-t border-slate-100 bg-slate-50 px-6 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-11 min-w-[132px] rounded-lg border border-slate-200 bg-white px-5 text-xs font-black uppercase tracking-wide text-slate-500 transition-colors hover:bg-slate-100"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onCopy}
+            disabled={isSaving || !selectedSource}
+            className="h-11 min-w-[132px] rounded-lg bg-blue-600 px-5 text-xs font-black uppercase tracking-wide text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-50"
+          >
+            {isSaving ? 'Copying...' : 'Confirm Copy'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DetailModal({ onClose, data, registrations }: { onClose: () => void; data: ForecastValue[]; registrations: Registration[] }) {
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -2760,8 +3111,8 @@ function DetailModal({ onClose, data, registrations }: { onClose: () => void; da
   );
 }
 
-function AddCplModal({ fy, onClose, onAdd, cplPrices }: { fy: number; onClose: () => void; onAdd: (month: string, price: number) => void; cplPrices: CPLPrice[] }) {
-  const [selectedMonth, setSelectedMonth] = useState('04');
+function AddCplModal({ fy, onClose, onAdd, cplPrices }: { fy: number; onClose: () => void; onAdd: (months: string[], price: number) => void; cplPrices: CPLPrice[] }) {
+  const [selectedMonths, setSelectedMonths] = useState<string[]>(['04']);
   const [price, setPrice] = useState<number>(3500);
 
   const months = ['04', '05', '06', '07', '08', '09', '10', '11', '12', '01', '02', '03'];
@@ -2771,7 +3122,21 @@ function AddCplModal({ fy, onClose, onAdd, cplPrices }: { fy: number; onClose: (
     return `${year}-${m}`;
   };
 
-  const isAlreadyExists = cplPrices.some(c => c.month === getFullMonth(selectedMonth));
+  const existingMonths = new Set(cplPrices.map(c => c.month));
+  const selectedFullMonths = selectedMonths
+    .map(getFullMonth)
+    .filter(month => !existingMonths.has(month));
+  const hasSelection = selectedFullMonths.length > 0;
+
+  const toggleMonth = (month: string) => {
+    const fullMonth = getFullMonth(month);
+    if (existingMonths.has(fullMonth)) return;
+    setSelectedMonths(prev =>
+      prev.includes(month)
+        ? prev.filter(item => item !== month)
+        : [...prev, month]
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -2785,19 +3150,20 @@ function AddCplModal({ fy, onClose, onAdd, cplPrices }: { fy: number; onClose: (
         <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-8">Fiscal Year {fy} Management</p>
 
         <div className="space-y-6">
-          <FilterGroup label="Select Month">
+          <FilterGroup label="Select Months">
             <div className="grid grid-cols-4 gap-2">
               {months.map(m => {
                 const fullMonth = getFullMonth(m);
-                const exists = cplPrices.some(c => c.month === fullMonth);
+                const exists = existingMonths.has(fullMonth);
+                const isSelected = selectedMonths.includes(m) && !exists;
                 return (
                   <button 
                     key={m}
                     disabled={exists}
-                    onClick={() => setSelectedMonth(m)}
+                    onClick={() => toggleMonth(m)}
                     className={cn(
                       "py-2 rounded-xl text-[10px] font-black uppercase border transition-all",
-                      selectedMonth === m ? "bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-500/30" : 
+                      isSelected ? "bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-500/30" : 
                       exists ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed line-through" : 
                       "bg-white text-slate-600 border-slate-200 hover:border-blue-400"
                     )}
@@ -2808,6 +3174,9 @@ function AddCplModal({ fy, onClose, onAdd, cplPrices }: { fy: number; onClose: (
                 );
               })}
             </div>
+            <p className="mt-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              {selectedFullMonths.length} month{selectedFullMonths.length === 1 ? '' : 's'} selected
+            </p>
           </FilterGroup>
 
           <FilterGroup label="Standard Base Price (USD)">
@@ -2826,11 +3195,11 @@ function AddCplModal({ fy, onClose, onAdd, cplPrices }: { fy: number; onClose: (
 
           <div className="pt-4 flex flex-col gap-3">
             <button 
-              disabled={isAlreadyExists}
-              onClick={() => onAdd(getFullMonth(selectedMonth), price)}
+              disabled={!hasSelection}
+              onClick={() => onAdd(selectedFullMonths, price)}
               className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl shadow-blue-500/20 active:scale-95 transition-all"
             >
-              Confirm and Add Month
+              Confirm and Add {selectedFullMonths.length > 1 ? `${selectedFullMonths.length} Months` : 'Month'}
             </button>
             <button 
               onClick={onClose}

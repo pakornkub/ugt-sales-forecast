@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import prisma from '../../db/prisma';
+import { crmBusinessUnitSelectRaw } from './businessUnit';
 
 const SNAPSHOT_SOURCE = 'crm_actual';
 export const SNAPSHOT_REFRESH_MS = 5 * 60 * 1000;
@@ -59,6 +60,7 @@ export async function getActiveSnapshotVersion() {
 }
 
 async function fetchRegistrationRows() {
+  const businessUnitSelect = await crmBusinessUnitSelectRaw('businessUnit');
   return prisma.$queryRawUnsafe<Record<string, unknown>[]>(`
     SELECT
       CAST(r.NewKey AS NVARCHAR(1000)) AS newKey,
@@ -107,7 +109,8 @@ async function fetchRegistrationRows() {
       r.EndUserCode AS endUserCode,
       r.EndUserExportControl AS endUserExportControl,
       r.EndUserName AS endUserName,
-      r.ProductName AS productName
+      r.ProductName AS productName,
+      ${businessUnitSelect}
     FROM dbo.VW_CRM_RegistrationAll_1 r
     WHERE r.NewKey IS NOT NULL AND r.MainRegist = 1
   `);
@@ -185,7 +188,7 @@ async function performRefresh() {
           newCoaName, newTier1, newOem, packing, agreedSpecType, wasteScrap,
           forResaleNotApprove, imdsDate, model, createdOn, approve, partName, coaName,
           process, application, subApp, zoneName, plantName, countryCode, endUserCode,
-          endUserExportControl, endUserName, productName
+          endUserExportControl, endUserName, productName, businessUnit
         )
         SELECT
           ${version}, registrationId, newKey, keyForNoCRM, ownerName,
@@ -196,7 +199,7 @@ async function performRefresh() {
           newCoaName, newTier1, newOem, packing, agreedSpecType, wasteScrap,
           forResaleNotApprove, imdsDate, model, createdOn, approve, partName, coaName,
           process, application, subApp, zoneName, plantName, countryCode, endUserCode,
-          endUserExportControl, endUserName, productName
+          endUserExportControl, endUserName, productName, businessUnit
         FROM OPENJSON(${registrationJson})
         WITH (
           registrationId NVARCHAR(200), newKey NVARCHAR(1000), keyForNoCRM NVARCHAR(500),
@@ -216,7 +219,7 @@ async function performRefresh() {
           subApp NVARCHAR(500), zoneName NVARCHAR(500), plantName NVARCHAR(500),
           countryCode NVARCHAR(100), endUserCode NVARCHAR(100),
           endUserExportControl NVARCHAR(500), endUserName NVARCHAR(500),
-          productName NVARCHAR(500)
+          productName NVARCHAR(500), businessUnit NVARCHAR(50)
         )
       `;
       await transaction.$executeRaw`
@@ -267,6 +270,8 @@ async function performRefresh() {
     await prisma.dataSnapshotState.update({
       where: { source: SNAPSHOT_SOURCE },
       data: { status: 'failed', lastError: message.slice(0, 2000) },
+    }).catch(updateError => {
+      console.error('[snapshot] failed to persist refresh error:', updateError);
     });
     throw error;
   }
@@ -298,9 +303,13 @@ export async function ensureSnapshotRefresh() {
 
 export function startSnapshotScheduler() {
   if (!USE_LOCAL_SNAPSHOT) return;
-  void ensureSnapshotRefresh();
+  void ensureSnapshotRefresh().catch(error => {
+    console.error('[snapshot] startup refresh check failed:', error);
+  });
   const timer = setInterval(() => {
-    void ensureSnapshotRefresh();
+    void ensureSnapshotRefresh().catch(error => {
+      console.error('[snapshot] scheduled refresh check failed:', error);
+    });
   }, 30_000);
   timer.unref();
 }

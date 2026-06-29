@@ -5,16 +5,17 @@ import { forecastBodyCellClass } from './forecastTableMetrics';
 import { getRegistrationFieldValue } from './forecastFilterUtils';
 
 const cellStyles: Partial<Record<RegColumnKey, string>> = {
+  businessUnit: 'font-normal text-black',
   ownerName: 'font-semibold text-slate-700',
   registrationTopic: 'font-mono text-slate-500 text-[10px]',
   materialCode: 'font-mono text-slate-500 uppercase',
   plantCode: 'font-mono font-bold text-blue-700',
   onOffSpec: 'font-bold text-slate-600',
-  inventoryA0Qty: 'font-mono font-bold text-emerald-700 justify-end',
-  inventoryNonA0Qty: 'font-mono font-bold text-amber-700 justify-end',
-  inventoryWaitJudgeQty: 'font-mono font-bold text-sky-700 justify-end',
-  inventoryOgQty: 'font-mono font-bold text-rose-700 justify-end',
-  inventoryYoQty: 'font-mono font-bold text-violet-700 justify-end',
+  inventoryA0Qty: 'font-normal text-black justify-end',
+  inventoryNonA0Qty: 'font-normal text-black justify-end',
+  inventoryWaitJudgeQty: 'font-normal text-black justify-end',
+  inventoryOgQty: 'font-normal text-black justify-end',
+  inventoryYoQty: 'font-normal text-black justify-end',
 };
 
 function RegTableCellBase({

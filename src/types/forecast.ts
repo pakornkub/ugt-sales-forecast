@@ -7,6 +7,7 @@ export type CarryDetailVisibility = Record<CarryDetailKey, boolean>;
 
 export const REG_COLUMN_KEYS = [
   'ownerName',
+  'businessUnit',
   'registrationTopic',
   'onOffSpec',
   'plantCode',
@@ -71,6 +72,7 @@ export interface Registration {
   isManaged?: boolean;
   sourceStatus?: 'matched' | 'registration_only' | 'actual_only';
   keyForNoCRM?: string;
+  businessUnit: string;
   ownerName: string;
   registrationTopic: string;
   onOffSpec: string;
@@ -133,6 +135,15 @@ export interface Registration {
 export interface CPLPrice {
   month: string;
   price: number;
+}
+
+export type PriceManagementType = 'Actual' | 'Fcst';
+
+export interface PriceManagementRow {
+  month: string;
+  cplPrice: number;
+  naphthaPrice: number;
+  benzenePrice: number;
 }
 
 export interface ActualValue {
