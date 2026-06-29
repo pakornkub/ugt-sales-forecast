@@ -5,6 +5,8 @@ import type {
   ForecastSummaryRequest,
   ForecastValue,
   InventoryRow,
+  PriceManagementRow,
+  PriceManagementType,
   Registration,
 } from '../types/forecast';
 
@@ -40,6 +42,7 @@ export interface CurrentForecastUnifiedPreviewRow {
   application: string | null;
   subApplication: string | null;
   owner: string | null;
+  businessUnit: string | null;
   qtyActual: number;
   qtyFcst: number;
   dimensionSource: 'registration' | 'actual' | 'excel' | 'actual_with_excel_fallback' | 'registration_with_actual_fallback';
@@ -438,6 +441,66 @@ export const api = {
   },
 
   // ── Versions ──────────────────────────────────────────────────────────────
+  priceManagement: {
+    list: (
+      fy: number,
+      priceType: PriceManagementType,
+      versionName: string,
+      signal?: AbortSignal
+    ): Promise<{ priceType: PriceManagementType; versionName: string; rows: PriceManagementRow[] }> => {
+      const qs = new URLSearchParams({
+        fy: String(fy),
+        priceType,
+        version: versionName,
+      });
+      return request(`/api/price-management?${qs.toString()}`, { signal });
+    },
+
+    listRange: (
+      startMonth: string,
+      endMonth: string,
+      versionName: string,
+      signal?: AbortSignal
+    ): Promise<{ priceType: PriceManagementType; versionName: string; rows: PriceManagementRow[] }> => {
+      const qs = new URLSearchParams({
+        startMonth,
+        endMonth,
+        priceType: 'Fcst',
+        version: versionName,
+      });
+      return request(`/api/price-management?${qs.toString()}`, { signal });
+    },
+
+    saveBulk: (
+      priceType: PriceManagementType,
+      versionName: string,
+      rows: PriceManagementRow[]
+    ): Promise<{ ok: boolean; updated: number }> =>
+      request('/api/price-management/bulk', {
+        method: 'PATCH',
+        body: JSON.stringify({ priceType, versionName, rows }),
+      }),
+
+    copy: (
+      fy: number,
+      sourceVersion: string,
+      targetVersion: string
+    ): Promise<{ ok: boolean; copied: number }> =>
+      request('/api/price-management/copy', {
+        method: 'POST',
+        body: JSON.stringify({ fy, sourceVersion, targetVersion }),
+      }),
+
+    remove: (
+      month: string,
+      priceType: PriceManagementType,
+      versionName: string
+    ): Promise<{ ok: boolean }> => {
+      const qs = new URLSearchParams({ priceType, version: versionName });
+      return request(`/api/price-management/${month}?${qs.toString()}`, { method: 'DELETE' });
+    },
+  },
+
   versions: {
     list: (): Promise<string[]> => request('/api/versions'),
 

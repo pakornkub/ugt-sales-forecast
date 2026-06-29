@@ -49,6 +49,7 @@ function emptyRegistration(id = ''): Registration {
     isManaged: true,
     sourceStatus: 'registration_only',
     keyForNoCRM: '',
+    businessUnit: '',
     ownerName: '',
     registrationTopic: '',
     onOffSpec: '',

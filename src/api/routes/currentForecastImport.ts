@@ -8,6 +8,7 @@ import {
   formatForecastPeriodForApi,
   parseForecastPeriodToDate,
 } from '../../lib/forecastPeriod';
+import { businessUnitFromPlantCode, crmBusinessUnitSelectSql } from '../services/businessUnit';
 
 const router = Router();
 
@@ -85,6 +86,7 @@ type RegistrationMatch = {
   application: string | null;
   subApplication: string | null;
   owner: string | null;
+  businessUnit: string | null;
 };
 
 type ActualSummary = {
@@ -118,6 +120,7 @@ type UnifiedPreviewRow = {
   owner: string | null;
   qtyActual: number;
   qtyFcst: number;
+  businessUnit: string | null;
   dimensionSource: 'registration' | 'actual' | 'excel' | 'actual_with_excel_fallback' | 'registration_with_actual_fallback';
 };
 
@@ -135,6 +138,7 @@ type ExcelForecastGroup = {
   application: string | null;
   subApplication: string | null;
   owner: string | null;
+  businessUnit: string | null;
   forecastValues: number[];
   hasInvalidNumber: boolean;
 };
@@ -209,6 +213,11 @@ function firstValue(current: string | null, value: unknown) {
   return current ?? nullableText(value);
 }
 
+function findHeaderIndex(header: unknown[], aliases: string[]) {
+  const normalizedAliases = new Set(aliases.map(alias => alias.trim().toUpperCase()));
+  return header.findIndex(value => normalizedAliases.has(normalizeHeader(value).toUpperCase()));
+}
+
 function parseForecastNumber(value: unknown) {
   if (value === null || value === undefined || value === '') return { ok: true as const, value: 0 };
   if (typeof value === 'number') {
@@ -238,6 +247,7 @@ function getRequestWorkbookBuffer(body: unknown) {
 async function findRegistrationMatches(keys: string[]) {
   if (keys.length === 0) return new Map<string, RegistrationMatch[]>();
   const snapshotVersion = await getActiveSnapshotVersion();
+  const directCrmBusinessUnitSql = await crmBusinessUnitSelectSql('r', 'businessUnit');
   const keysJson = JSON.stringify(keys);
   const crmRowsPromise = snapshotVersion
     ? prisma.$queryRaw<RegistrationMatch[]>`
@@ -250,7 +260,7 @@ async function findRegistrationMatches(keys: string[]) {
         r.countryName AS country, r.soldToName AS soldTo, r.shipToName AS shipTo,
         r.endUser AS enduser, COALESCE(r.plantName, r.plantCode) AS plant,
         r.materialCode, r.onOffSpec AS onOff, r.process, r.application,
-        r.subApp AS subApplication, r.ownerName AS owner
+        r.subApp AS subApplication, r.ownerName AS owner, r.businessUnit
       FROM dbo.crm_registration_snapshot r
       INNER JOIN requested_keys requested ON requested.keyForNoCRM = r.keyForNoCRM
       WHERE r.snapshotVersion = ${snapshotVersion}
@@ -274,7 +284,8 @@ async function findRegistrationMatches(keys: string[]) {
         CAST(r.[Cat1Name] AS NVARCHAR(500)) AS process,
         CAST(r.[Cat2Name] AS NVARCHAR(500)) AS application,
         CAST(r.[Cat3Name] AS NVARCHAR(500)) AS subApplication,
-        CAST(r.[OwnerName] AS NVARCHAR(500)) AS owner
+        CAST(r.[OwnerName] AS NVARCHAR(500)) AS owner,
+        ${directCrmBusinessUnitSql}
       FROM dbo.VW_CRM_RegistrationAll_1 r
       INNER JOIN requested_keys requested ON requested.keyForNoCRM = r.KeyforNoCRM
       WHERE r.MainRegist = 1
@@ -303,6 +314,7 @@ async function findRegistrationMatches(keys: string[]) {
       application: row.application,
       subApplication: row.subApp,
       owner: row.ownerName,
+      businessUnit: row.businessUnit,
     })),
   ];
 
@@ -667,6 +679,7 @@ router.post(
       const forecastColumns = header
         .map((value, index) => parseForecastMonthColumn(value, index))
         .filter((column): column is ForecastImportColumn => column !== null);
+      const businessUnitColumnIndex = findHeaderIndex(header, ['BU', 'Business Unit', 'BusinessUnit']);
 
       if (normalizeHeader(header[0]) !== KEY_HEADER) {
         headerErrors.push({ column: 'A', expected: KEY_HEADER, actual: normalizeHeader(header[0]) });
@@ -743,6 +756,7 @@ router.post(
           application: null,
           subApplication: null,
           owner: null,
+          businessUnit: null,
           forecastValues: forecastColumns.map(() => 0),
           hasInvalidNumber: false,
         };
@@ -759,6 +773,10 @@ router.post(
         group.application = firstValue(group.application, row[22]);
         group.subApplication = firstValue(group.subApplication, row[23]);
         group.owner = firstValue(group.owner, row[30]);
+        group.businessUnit = firstValue(
+          group.businessUnit,
+          businessUnitColumnIndex >= 0 ? row[businessUnitColumnIndex] : null
+        );
 
         forecastColumns.forEach((forecastColumn, forecastIndex) => {
           const rawValue = row[forecastColumn.index];
@@ -913,6 +931,7 @@ router.post(
             owner: group.owner,
             qtyActual: Number(actual?.qtyActual ?? 0),
             qtyFcst: group.forecastValues.reduce((sum, value) => sum + value, 0),
+            businessUnit: group.businessUnit ?? businessUnitFromPlantCode(actual?.plant ?? group.plant),
             dimensionSource: actual ? 'actual_with_excel_fallback' : 'excel',
           });
           continue;
@@ -937,6 +956,7 @@ router.post(
           owner: registration.owner,
           qtyActual: Number(actual?.qtyActual ?? 0),
           qtyFcst: group.forecastValues.reduce((sum, value) => sum + value, 0),
+          businessUnit: registration.businessUnit ?? group.businessUnit,
           dimensionSource: hasActual ? 'registration_with_actual_fallback' : 'registration',
         });
       }
@@ -962,6 +982,7 @@ router.post(
           owner: null,
           qtyActual: Number(actual.qtyActual),
           qtyFcst: 0,
+          businessUnit: null,
           dimensionSource: 'actual',
         });
       }

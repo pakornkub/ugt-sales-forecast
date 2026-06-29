@@ -14,6 +14,7 @@ export interface RegColumnDef {
 
 export const ALL_REG_COLUMNS: RegColumnDef[] = [
   { key: 'ownerName', label: 'Owner Name' },
+  { key: 'businessUnit', label: 'BU' },
   { key: 'registrationTopic', label: 'Registration Topic' },
   { key: 'onOffSpec', label: 'On/Off Spec' },
   { key: 'plantCode', label: 'Plant Code' },
@@ -79,6 +80,7 @@ export const DEFAULT_COLUMN_ORDER: RegColumnKey[] = [...REG_COLUMN_KEYS];
 export const DEFAULT_VISIBLE_COLUMN_KEYS: RegColumnKey[] = [
   'priceFormula',
   'ownerName',
+  'businessUnit',
   'registrationTopic',
   'materialCode',
   'materialDescription',
