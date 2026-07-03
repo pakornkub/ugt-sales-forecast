@@ -17,7 +17,7 @@ export function queueForecastChangeNotification(input: ForecastChangeInput) {
     return;
   }
 
-  void (async () => {
+  const sendNotification = async () => {
     try {
       const registrationIds = [...new Set(input.changes.map(change => change.registrationId))];
       const metaById = await loadOverplanRegistrationMeta(registrationIds);
@@ -41,5 +41,6 @@ export function queueForecastChangeNotification(input: ForecastChangeInput) {
     } catch (error) {
       console.error('[forecast-change-notification] failed:', error);
     }
-  })();
+  };
+  sendNotification().catch(() => undefined);
 }

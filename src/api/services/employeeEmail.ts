@@ -70,7 +70,7 @@ async function lookupContactFromCacheTable(key: string) {
        OR LOWER(LTRIM(RTRIM(c.currentEmail))) = ${key}
   `;
   const row = rows[0];
-  if (!row || !row.currentEmail?.trim()) return null;
+  if (!row?.currentEmail?.trim()) return null;
   return {
     email: row.currentEmail.trim().toLowerCase(),
     fullName: row.fullNameEng?.trim() || null,
@@ -193,7 +193,7 @@ let hrSyncPromise: Promise<{ synced: number }> | null = null;
 
 /// Refresh the local hr_employee_cache snapshot from dbo.vwHR_SC_Employee.
 export async function syncHrEmployeeCache(): Promise<{ synced: number }> {
-  if (hrSyncPromise) return hrSyncPromise;
+  if (hrSyncPromise !== null) return hrSyncPromise;
 
   hrSyncPromise = (async () => {
     const sql = `

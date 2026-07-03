@@ -4,10 +4,10 @@ import { cn } from '../../lib/utils';
 export function PaneResizeDivider({
   onPointerDown,
   isDragging,
-}: {
+}: Readonly<{
   onPointerDown: (e: React.PointerEvent) => void;
   isDragging: boolean;
-}) {
+}>) {
   return (
     <div
       role="separator"

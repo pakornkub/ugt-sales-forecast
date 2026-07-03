@@ -32,7 +32,7 @@ type DraftAssignment = {
   source: string;
 };
 
-function Avatar({ name }: { readonly name: string }) {
+function Avatar({ name }: Readonly<{ readonly name: string }>) {
   const initials = name
     .split(/\s+/)
     .filter(Boolean)
@@ -46,7 +46,7 @@ function Avatar({ name }: { readonly name: string }) {
   );
 }
 
-function RoleBadge({ role }: { readonly role: 'admin' | 'super_user' }) {
+function RoleBadge({ role }: Readonly<{ readonly role: 'admin' | 'super_user' }>) {
   return (
     <span
       className={cn(
@@ -488,7 +488,7 @@ export function ManageAdminPanel({
               </button>
               <button
                 type="button"
-                onClick={() => { void handleSave(); }}
+                onClick={handleSave}
                 disabled={saving || loading}
                 className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[#007ABE] px-4 text-xs font-bold text-white shadow-sm transition-colors hover:bg-[#0069a3] disabled:opacity-50"
               >

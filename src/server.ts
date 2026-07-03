@@ -72,5 +72,7 @@ app.listen(PORT, () => {
   console.log(`[server] listening on http://localhost:${PORT}${basePath || ''}`);
   startSnapshotScheduler();
   startOverplanScheduler();
-  void ensureHrEmployeeCache().then(() => ensureRoleDefaults());
+  ensureHrEmployeeCache()
+    .then(() => ensureRoleDefaults())
+    .catch(() => undefined);
 });

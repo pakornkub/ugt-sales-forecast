@@ -22,11 +22,11 @@ function RegTableCellBase({
   reg,
   columnKey,
   width,
-}: {
+}: Readonly<{
   reg: Registration;
   columnKey: RegColumnKey;
   width: number;
-}) {
+}>) {
   const rawValue = reg[columnKey as keyof Registration];
   const isPendingInventory = columnKey.startsWith('inventory') && typeof rawValue !== 'number';
   const value = isPendingInventory ? '-' : getRegistrationFieldValue(reg, columnKey);

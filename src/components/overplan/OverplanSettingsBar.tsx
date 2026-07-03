@@ -17,12 +17,12 @@ function ThresholdToggle({
   label,
   tone,
   onToggle,
-}: {
+}: Readonly<{
   readonly enabled: boolean;
   readonly label: string;
   readonly tone: 'rose' | 'amber';
   onToggle: () => void;
-}) {
+}>) {
   const activeRing = tone === 'rose' ? 'bg-rose-500' : 'bg-amber-500';
 
   return (
@@ -59,7 +59,7 @@ export function OverplanActionButtons({
   onSave,
   onRun,
   onPreviewEmail,
-}: {
+}: Readonly<{
   readonly saving: boolean;
   readonly running: boolean;
   readonly notifying: boolean;
@@ -67,7 +67,7 @@ export function OverplanActionButtons({
   readonly onSave: () => void;
   readonly onRun: () => void;
   readonly onPreviewEmail: () => void;
-}) {
+}>) {
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1.5">
       <button
@@ -111,7 +111,7 @@ export function OverplanSettingsBar({
   onConfigChange,
   onStartMonthChange,
   onEndMonthChange,
-}: {
+}: Readonly<{
   readonly config: OverplanConfig;
   readonly forecastVersions: string[];
   readonly startMonth: string;
@@ -119,7 +119,7 @@ export function OverplanSettingsBar({
   readonly onConfigChange: (patch: Partial<OverplanConfig>) => void;
   readonly onStartMonthChange: (value: string) => void;
   readonly onEndMonthChange: (value: string) => void;
-}) {
+}>) {
   const compareOptions = useMemo(
     () => [ACTUAL_SOURCE, ...forecastVersions.filter(version => version !== ACTUAL_SOURCE)],
     [forecastVersions]

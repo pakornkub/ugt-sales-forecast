@@ -137,16 +137,6 @@ function ForecastInputTableComponent({
     return columnVisibility ? columnVisibility[c.key] !== false : true;
   });
 
-  const fallbackOwnerNames = React.useMemo(() => {
-    const names = new Set<string>();
-    for (const registration of registrations) {
-      const owner = registration.ownerName?.trim();
-      if (owner) names.add(owner);
-    }
-    return [...names];
-  }, [registrations]);
-
-
   const { regPaneRef, monthPaneRef, scrollTop, syncFromReg, syncFromMonth, resetScrollTop } = useScrollSync();
   const [dragOverColumnKey, setDragOverColumnKey] = useState<RegColumnKey | null>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -556,7 +546,7 @@ function formatMissingKeyRowsSummary(
     bySheet.set(sheet, existing);
   }
   return [...bySheet.entries()]
-    .map(([sheet, sheetRows]) => `${sheet}: ${sheetRows.sort((a, b) => a - b).join(', ')}`)
+    .map(([sheet, sheetRows]) => `${sheet}: ${[...sheetRows].sort((a, b) => a - b).join(', ')}`)
     .join(' · ');
 }
 
@@ -572,6 +562,19 @@ function isPreviewStale(preview: ForecastImportPreview) {
   return preview.previewContractVersion !== LEGACY_FORECAST_IMPORT_CONTRACT_VERSION;
 }
 
+function countVersionedAmountWarnings(preview: ForecastImportPreview | null, isVersioned: boolean) {
+  if (!isVersioned || !preview || !isVersionedImportPreview(preview)) return 0;
+  return preview.summary.amountMismatchWarnings ?? preview.amountMismatchWarnings.length;
+}
+
+function getImportConfirmReadyText(preview: ForecastImportPreview | null, isVersioned: boolean) {
+  if (!isVersioned) return 'Review the summary and validation details, then confirm to save Current Forecast.';
+  const targetVersion = preview && isVersionedImportPreview(preview)
+    ? preview.targetVersion
+    : 'forecast';
+  return `Review the summary and validation details, then confirm to save ${targetVersion}.`;
+}
+
 function ImportPreviewModal({
   open,
   file,
@@ -584,7 +587,7 @@ function ImportPreviewModal({
   onFileChange,
   onPreview,
   onConfirm,
-}: {
+}: Readonly<{
   open: boolean;
   file: File | null;
   preview: ForecastImportPreview | null;
@@ -596,7 +599,7 @@ function ImportPreviewModal({
   onFileChange: (file: File | null) => void;
   onPreview: () => void;
   onConfirm: () => void;
-}) {
+}>) {
   useEffect(() => {
     if (!open) return;
     const previousOverflow = document.body.style.overflow;
@@ -623,27 +626,27 @@ function ImportPreviewModal({
     ? summary.missingKeyRows +
       summary.unmatchedRows +
       (summary.proposedRegistrationRows ?? 0) +
-      (isVersioned && isVersionedImportPreview(preview!)
-        ? preview!.summary.amountMismatchWarnings ?? preview!.amountMismatchWarnings.length
-        : 0)
+      countVersionedAmountWarnings(preview, isVersioned)
     : 0;
   const importTitle = isVersioned ? 'Versioned Forecast Import' : 'Current Forecast Import';
   const importSubtitle = isVersioned
     ? 'Qty, price, and amount validation before committing to the selected forecast version.'
     : 'Preview validation results before committing to the database.';
-  const confirmReadyText = isVersioned
-    ? `Review the summary and validation details, then confirm to save ${isVersionedImportPreview(preview!) ? preview!.targetVersion : 'forecast'}.`
-    : 'Review the summary and validation details, then confirm to save Current Forecast.';
+  const confirmReadyText = getImportConfirmReadyText(preview, isVersioned);
 
   return createPortal(
     <div className="fixed inset-0 z-[70] overflow-hidden">
-      <div className="absolute inset-0 bg-slate-900/65 backdrop-blur-md" onClick={onClose} aria-hidden />
+      <button
+        type="button"
+        className="absolute inset-0 bg-slate-900/65 backdrop-blur-md"
+        onClick={onClose}
+        aria-label="Close import preview"
+      />
       <div className="relative flex h-full items-center justify-center p-4 sm:p-6">
-      <div
-        role="dialog"
-        aria-modal="true"
+      <dialog
+        open
         aria-labelledby="import-preview-title"
-        className="flex h-[min(92dvh,920px)] max-h-[min(92dvh,920px)] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)]"
+        className="m-0 flex h-[min(92dvh,920px)] max-h-[min(92dvh,920px)] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white p-0 shadow-[0_24px_80px_rgba(15,23,42,0.28)]"
         onClick={e => e.stopPropagation()}
       >
         <div className="shrink-0 bg-[#003d6b] px-6 py-4 text-white">
@@ -915,8 +918,8 @@ function ImportPreviewModal({
                         </tr>
                       </thead>
                       <tbody>
-                        {preview.amountMismatchWarnings.slice(0, 100).map((item, idx) => (
-                          <tr key={`${item.sourceRow}-${item.forecastMonth}-${idx}`} className="font-mono text-slate-700 even:bg-slate-50/80">
+                        {preview.amountMismatchWarnings.slice(0, 100).map(item => (
+                          <tr key={`${item.sourceSheet}-${item.sourceRow}-${item.forecastMonth}-${item.excelKeyForNoRegist}`} className="font-mono text-slate-700 even:bg-slate-50/80">
                             <td className="border border-slate-200 p-2">{item.sourceRow}</td>
                             <td className="border border-slate-200 p-2 max-w-[220px] truncate">{item.excelKeyForNoRegist}</td>
                             <td className="border border-slate-200 p-2">{item.forecastMonth}</td>
@@ -1027,8 +1030,8 @@ function ImportPreviewModal({
                       </tr>
                     </thead>
                     <tbody>
-                      {unifiedPreviewRows.slice(0, 100).map((row, idx) => (
-                        <tr key={`${row.status}-${row.keyNoRegist}-${idx}`} className="text-slate-700 even:bg-slate-50/80">
+                      {unifiedPreviewRows.slice(0, 100).map(row => (
+                        <tr key={`${row.status}-${row.keyNoRegist}-${row.sourceRows.join('-')}`} className="text-slate-700 even:bg-slate-50/80">
                           <td className="border border-slate-200 p-2">
                             <span className={cn(
                               'inline-flex whitespace-nowrap rounded px-2 py-0.5 text-[10px] font-semibold',
@@ -1101,8 +1104,8 @@ function ImportPreviewModal({
                       </tr>
                     </thead>
                     <tbody>
-                      {preview.importableRecords.slice(0, 20).map((record, idx) => (
-                        <tr key={`${record.sourceRow}-${record.sourceColumn}-${idx}`} className="font-mono text-slate-700 even:bg-slate-50/80">
+                      {preview.importableRecords.slice(0, 20).map(record => (
+                        <tr key={`${record.excelKeyForNoRegist}-${record.sourceRow}-${record.sourceColumn}-${record.period}`} className="font-mono text-slate-700 even:bg-slate-50/80">
                           <td className="border border-slate-200 p-2">{record.sourceRow}</td>
                           <td className="border border-slate-200 p-2 max-w-[260px] truncate">{record.excelKeyForNoRegist}</td>
                           <td className="border border-slate-200 p-2">{record.sourceMonthHeader}</td>
@@ -1188,7 +1191,7 @@ function ImportPreviewModal({
             </button>
           </div>
         </div>
-      </div>
+      </dialog>
       </div>
     </div>,
     document.body
@@ -1198,10 +1201,10 @@ function ImportPreviewModal({
 function ImportValidationIssues({
   preview,
   isStalePreviewBackend,
-}: {
+}: Readonly<{
   preview: ForecastImportPreview;
   isStalePreviewBackend: boolean;
-}) {
+}>) {
   const UNMATCHED_DISPLAY_LIMIT = 75;
   const headerErrors = preview.headerErrors ?? [];
   const invalidNumericValues = preview.invalidNumericValues ?? [];
@@ -1359,14 +1362,14 @@ function ValidationIssueTable({
   columns,
   rows,
   wideColumns = [],
-}: {
+}: Readonly<{
   title: string;
   subtitle: string;
   severity: 'error' | 'warning';
   columns: string[];
   rows: string[][];
   wideColumns?: number[];
-}) {
+}>) {
   const accentClass = severity === 'error' ? 'border-l-red-500' : 'border-l-amber-500';
   const badgeClass = severity === 'error'
     ? 'bg-red-100 text-red-800'
@@ -1396,11 +1399,13 @@ function ValidationIssueTable({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, rowIdx) => (
-              <tr key={rowIdx} className="even:bg-slate-50/70">
-                {row.map((cell, cellIdx) => (
+            {rows.map(row => (
+              <tr key={row.join('|')} className="even:bg-slate-50/70">
+                {columns.map((column, cellIdx) => {
+                  const cell = row[cellIdx] ?? '';
+                  return (
                   <td
-                    key={`${rowIdx}-${cellIdx}`}
+                    key={`${column}-${cell}`}
                     className={cn(
                       'border border-slate-200 p-2 align-top',
                       cellIdx === 0 || cellIdx === 1 ? 'font-mono' : '',
@@ -1412,7 +1417,8 @@ function ValidationIssueTable({
                   >
                     {cell || '—'}
                   </td>
-                ))}
+                );
+                })}
               </tr>
             ))}
           </tbody>
@@ -1428,13 +1434,13 @@ function PreviewDataPanel({
   totalCount,
   emptyText,
   children,
-}: {
+}: Readonly<{
   title: string;
   count: number;
   totalCount?: number;
   emptyText: string;
   children: React.ReactNode;
-}) {
+}>) {
   const total = totalCount ?? count;
   const isSample = total > count;
 
@@ -1466,11 +1472,11 @@ function PreviewStat({
   label,
   value,
   variant = 'neutral',
-}: {
+}: Readonly<{
   label: string;
   value: number | null | undefined;
   variant?: 'neutral' | 'primary' | 'success' | 'warning' | 'danger';
-}) {
+}>) {
   const displayValue = value ?? 0;
   const variantClass = {
     neutral: 'border-slate-200 bg-white text-slate-900',
@@ -1492,11 +1498,11 @@ function PreviewList({
   title,
   emptyText,
   items,
-}: {
+}: Readonly<{
   title: string;
   emptyText: string;
   items: string[];
-}) {
+}>) {
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-200 bg-slate-100 px-4 py-2.5">
@@ -1505,9 +1511,9 @@ function PreviewList({
       <div className="max-h-36 overflow-auto p-3">
         {items.length > 0 ? (
           <ul className="space-y-2">
-            {items.map((item, idx) => (
+            {items.map(item => (
               <li
-                key={`${item}-${idx}`}
+                key={item}
                 className="rounded-md border border-slate-100 bg-slate-50 px-2.5 py-2 font-mono text-[11px] text-slate-700 break-all"
                 title={item}
               >

@@ -51,7 +51,7 @@ export function NavDropdown({
   onClose,
   active,
   children,
-}: {
+}: Readonly<{
   readonly label: string;
   readonly icon: React.ReactNode;
   readonly isOpen: boolean;
@@ -59,7 +59,7 @@ export function NavDropdown({
   readonly onClose: () => void;
   readonly active?: boolean;
   readonly children: React.ReactNode;
-}) {
+}>) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const position = useDropdownPosition(isOpen, buttonRef);
@@ -129,12 +129,12 @@ export function NavDropdownItem({
   icon,
   onClick,
   badge,
-}: {
+}: Readonly<{
   readonly label: string;
   readonly icon?: React.ReactNode;
   readonly onClick: () => void;
   readonly badge?: number;
-}) {
+}>) {
   return (
     <button
       type="button"

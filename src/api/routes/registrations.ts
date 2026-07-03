@@ -238,7 +238,9 @@ function canonicalOnOff(value: unknown) {
 
 function clearRegistrationDependentCaches() {
   clearActualCaches();
-  void import('./forecast').then(module => module.clearForecastSummaryCache());
+  import('./forecast')
+    .then(module => module.clearForecastSummaryCache())
+    .catch(() => undefined);
 }
 
 function parsePageSize(value: unknown) {

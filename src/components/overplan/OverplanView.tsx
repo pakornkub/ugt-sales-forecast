@@ -33,6 +33,10 @@ import {
   type EmailBatchPreview,
 } from '../notifications/NotificationEmailPreviewModal';
 
+function ignorePromise(promise: Promise<unknown>) {
+  promise.catch(() => undefined);
+}
+
 const DEFAULT_CONFIG: OverplanConfig = {
   id: 'default',
   planVersionName: 'BB FY26',
@@ -66,14 +70,14 @@ function MetricTile({
   hint,
   accent,
   dimmed,
-}: {
+}: Readonly<{
   readonly icon: React.ReactNode;
   readonly label: string;
   readonly value: number;
   readonly hint?: string;
   readonly accent?: 'brand' | 'rose' | 'amber' | 'slate';
   readonly dimmed?: boolean;
-}) {
+}>) {
   const accentStyles = {
     brand: 'text-[#007ABE] bg-[#007ABE]/8 ring-[#007ABE]/15',
     rose: 'text-rose-600 bg-rose-50 ring-rose-100',
@@ -112,10 +116,10 @@ function MetricSkeleton() {
 function AlertBanner({
   tone,
   children,
-}: {
+}: Readonly<{
   readonly tone: 'error' | 'success';
   readonly children: React.ReactNode;
-}) {
+}>) {
   const styles = tone === 'error'
     ? 'border-rose-200 bg-rose-50 text-rose-800'
     : 'border-emerald-200 bg-emerald-50 text-emerald-800';
@@ -454,11 +458,11 @@ export function OverplanView() {
 
   useEffect(() => {
     let cancelled = false;
-    void api.versions.list().then(versions => {
+    ignorePromise(api.versions.list().then(versions => {
       if (!cancelled && versions.length > 0) setForecastVersions(versions);
     }).catch(() => {
       // Keep fallback list when versions API is unavailable.
-    });
+    }));
     return () => {
       cancelled = true;
     };
@@ -503,14 +507,14 @@ export function OverplanView() {
     if (!bootstrappedRef.current) return;
     if (prevBreachPageRef.current === breachPage) return;
     prevBreachPageRef.current = breachPage;
-    void reloadBreachPage(breachPage);
+    ignorePromise(reloadBreachPage(breachPage));
   }, [breachPage, reloadBreachPage]);
 
   useEffect(() => {
     if (!bootstrappedRef.current) return;
     if (prevViewRef.current === view) return;
     prevViewRef.current = view;
-    void runEvaluate();
+    ignorePromise(runEvaluate());
   }, [view, runEvaluate]);
 
   const handleSaveConfig = useCallback(async () => {
@@ -662,9 +666,9 @@ export function OverplanView() {
               running={running}
               notifying={notifying}
               compareInvalid={compareInvalid}
-              onSave={() => { void handleSaveConfig(); }}
-              onRun={() => { void runEvaluate(); }}
-              onPreviewEmail={() => { void handlePreviewOverplanEmail(); }}
+              onSave={() => { ignorePromise(handleSaveConfig()); }}
+              onRun={() => { ignorePromise(runEvaluate()); }}
+              onPreviewEmail={() => { ignorePromise(handlePreviewOverplanEmail()); }}
             />
             {generatedAt && (
               <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500">
@@ -692,7 +696,7 @@ export function OverplanView() {
         loading={emailPreviewLoading}
         sending={emailSending}
         sendMessage={emailSendMessage}
-        onSend={() => { void handleSendOverplanEmail(); }}
+        onSend={() => { ignorePromise(handleSendOverplanEmail()); }}
         onClose={() => {
           setEmailPreviewOpen(false);
           setEmailSendMessage(null);
@@ -841,7 +845,7 @@ export function OverplanView() {
               isLoadingMore={isLoadingMore}
               hasMoreRows={hasMoreRows}
               totalRows={totalRows}
-              onLoadMore={() => { void loadMoreRows(); }}
+              onLoadMore={() => { ignorePromise(loadMoreRows()); }}
             />
           </div>
         </section>
