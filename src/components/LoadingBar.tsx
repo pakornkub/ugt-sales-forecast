@@ -7,11 +7,11 @@ export function LoadingBar() {
   const [opacity, setOpacity] = useState(1);
   const [mounted, setMounted] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const hideRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearTimers = () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
-    if (hideRef.current)    clearTimeout(hideRef.current);
+    if (hideRef.current) clearTimeout(hideRef.current);
   };
 
   useEffect(() => {
@@ -21,10 +21,10 @@ export function LoadingBar() {
       setOpacity(1);
       setMounted(true);
 
-      // Quickly reach ~30%, then crawl toward 85%
+      // Quickly reach ~30%, then crawl toward 85%.
       let p = 0;
       intervalRef.current = setInterval(() => {
-        p += p < 30 ? 8 + Math.random() * 12 : Math.random() * 3;
+        p += p < 30 ? 12 : 2;
         if (p > 85) p = 85;
         setProgress(p);
       }, 180);

@@ -65,7 +65,7 @@ export function SfSelect({
   menuMinWidth,
   id,
   'aria-label': ariaLabel,
-}: {
+}: Readonly<{
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly options: (SfSelectOption | string)[];
@@ -74,7 +74,7 @@ export function SfSelect({
   readonly menuMinWidth?: number;
   readonly id?: string;
   readonly 'aria-label'?: string;
-}) {
+}>) {
   const [isOpen, setIsOpen] = useState(false);
   const [highlightIndex, setHighlightIndex] = useState(-1);
   const buttonRef = useRef<HTMLButtonElement>(null);

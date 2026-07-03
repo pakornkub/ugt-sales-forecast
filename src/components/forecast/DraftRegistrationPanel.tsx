@@ -108,11 +108,11 @@ export function DraftRegistrationPanel({
   open,
   onClose,
   onCreate,
-}: {
+}: Readonly<{
   open: boolean;
   onClose: () => void;
   onCreate: (registration: Registration) => Promise<Registration>;
-}) {
+}>) {
   const [form, setForm] = useState<Registration>(() => emptyRegistration());
   const [selectedOptionalFields, setSelectedOptionalFields] = useState<RegColumnKey[]>([]);
   const [fieldSearch, setFieldSearch] = useState('');
@@ -482,13 +482,13 @@ export function ManageRegistrationPanel({
   onClose,
   onUpdate,
   onDelete,
-}: {
+}: Readonly<{
   open: boolean;
   registrations: Registration[];
   onClose: () => void;
   onUpdate: (registration: Registration) => Promise<Registration>;
   onDelete: (registrationId: string) => Promise<void>;
-}) {
+}>) {
   const [form, setForm] = useState<Registration | null>(null);
   const [selectedOptionalFields, setSelectedOptionalFields] = useState<RegColumnKey[]>([]);
   const [fieldSearch, setFieldSearch] = useState('');

@@ -79,7 +79,9 @@ const summaryCache = new Map<
 
 export function clearForecastSummaryCache() {
   summaryCache.clear();
-  void import('./overplan').then(module => module.clearOverplanEvaluateCache());
+  import('./overplan')
+    .then(module => module.clearOverplanEvaluateCache())
+    .catch(() => undefined);
 }
 
 function stableJson(value: unknown): string {

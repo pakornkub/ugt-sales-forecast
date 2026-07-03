@@ -28,7 +28,7 @@ export function ColumnReorderPanel({
   onToggleVisibility,
   carryDetailVisibility,
   onToggleCarryDetail,
-}: {
+}: Readonly<{
   open: boolean;
   onClose: () => void;
   columnOrder: RegColumnKey[];
@@ -38,7 +38,7 @@ export function ColumnReorderPanel({
   onToggleVisibility?: (key: RegColumnKey) => void;
   carryDetailVisibility: CarryDetailVisibility;
   onToggleCarryDetail: (key: CarryDetailKey) => void;
-}) {
+}>) {
   const [draggedKey, setDraggedKey] = useState<RegColumnKey | null>(null);
   const [dragOverKey, setDragOverKey] = useState<RegColumnKey | null>(null);
   const [columnSearch, setColumnSearch] = useState('');

@@ -76,7 +76,7 @@ export function clearOverplanEvaluateCache() {
 }
 
 export function scheduleOverplanWarmup() {
-  if (warmupPromise) return warmupPromise;
+  if (warmupPromise !== null) return warmupPromise;
 
   warmupPromise = (async () => {
     try {

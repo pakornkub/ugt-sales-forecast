@@ -43,7 +43,7 @@ function batchKindLabel(batch: EmailBatchPreview) {
   return 'Diff plan by registration';
 }
 
-function RecipientAvatar({ name }: { readonly name: string }) {
+function RecipientAvatar({ name }: Readonly<{ readonly name: string }>) {
   const initials = name
     .split(/\s+/)
     .filter(Boolean)
@@ -65,7 +65,7 @@ export function NotificationEmailPreviewModal({
   sendMessage,
   onSend,
   onClose,
-}: {
+}: Readonly<{
   readonly open: boolean;
   readonly batches: EmailBatchPreview[];
   readonly loading: boolean;
@@ -73,7 +73,7 @@ export function NotificationEmailPreviewModal({
   readonly sendMessage?: { tone: 'success' | 'error'; text: string } | null;
   readonly onSend?: () => void;
   readonly onClose: () => void;
-}) {
+}>) {
   const [activeId, setActiveId] = useState<string | null>(null);
 
   useEffect(() => {

@@ -12,7 +12,7 @@ const LoadingContext = createContext<LoadingContextValue>({
   done: () => {},
 });
 
-export function LoadingProvider({ children }: { children: React.ReactNode }) {
+export function LoadingProvider({ children }: Readonly<{ children: React.ReactNode }>) {
   const [count, setCount] = useState(0);
   const start = useCallback(() => setCount(c => c + 1), []);
   const done  = useCallback(() => setCount(c => Math.max(0, c - 1)), []);

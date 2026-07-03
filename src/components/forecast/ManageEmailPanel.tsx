@@ -30,10 +30,10 @@ type ManageEmailPanelProps = {
 };
 
 function makeTempId() {
-  return `temp-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+  return `temp-${globalThis.crypto.randomUUID()}`;
 }
 
-function Avatar({ name }: { readonly name: string }) {
+function Avatar({ name }: Readonly<{ readonly name: string }>) {
   const initials = name
     .split(/\s+/)
     .filter(Boolean)
@@ -372,7 +372,7 @@ export function ManageEmailPanel({ open, onClose }: ManageEmailPanelProps) {
               </button>
               <button
                 type="button"
-                onClick={() => { void handleSave(); }}
+                onClick={handleSave}
                 disabled={saving || loading}
                 className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[#007ABE] px-4 text-xs font-bold text-white shadow-sm transition-colors hover:bg-[#0069a3] disabled:opacity-50"
               >

@@ -48,8 +48,8 @@ export function parseForecastMonthColumn(value: unknown, index: number): Forecas
 }
 
 export function parseMonthTokenFromPrefixedHeader(value: unknown): { month: string; header: string } | null {
-  const raw = normalizeHeader(value);
-  const match = /^[PA]_([A-Za-z]{3})-(\d{2})$/i.exec(raw);
+  const raw = normalizeHeader(value).toUpperCase();
+  const match = /^[PA]_([A-Z]{3})-(\d{2})$/.exec(raw);
   if (!match) return null;
   const monthAbbr = match[1].toUpperCase();
   const monthIndex = MONTH_INDEX_BY_ABBREVIATION[monthAbbr];
@@ -136,7 +136,7 @@ export function sheetHasLegacyImportLayout(sheet: XLSX.WorkSheet) {
 }
 
 export function forecastColumnSignature(columns: Array<{ month: string }>) {
-  return columns.map(column => column.month).sort().join('|');
+  return columns.map(column => column.month).sort((left, right) => left.localeCompare(right)).join('|');
 }
 
 export function primarySourceEntry(group: { sourceSheetRows: Array<{ sourceSheet: string; sourceRow: number }>; sourceRows: number[] }) {

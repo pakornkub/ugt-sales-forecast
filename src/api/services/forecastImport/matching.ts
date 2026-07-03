@@ -142,7 +142,9 @@ let actualOnlyCachePromise: Promise<ActualSummary[]> | null = null;
 let actualOnlyCacheVersion: string | null = null;
 
 export async function findActualSummaries(keys: string[], forecastColumns: ForecastImportColumn[]) {
-  const sortedMonths = forecastColumns.map(column => column.month).sort();
+  const sortedMonths = forecastColumns
+    .map(column => column.month)
+    .sort((left, right) => left.localeCompare(right));
   const startDate = `${sortedMonths[0]}-01`;
   const endExclusive = nextMonthStart(sortedMonths.at(-1)!);
   const snapshotVersion = await getActiveSnapshotVersion();

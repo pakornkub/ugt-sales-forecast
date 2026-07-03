@@ -103,6 +103,27 @@ async function ensureDefaultAdminRow(identity: HrIdentity) {
   }
 }
 
+function scoreHrIdentity(row: HrIdentity, input: {
+  email: string;
+  emailLocal: string;
+  loginName: string;
+  nameKeys: string[];
+}) {
+  let score = 0;
+  const rowEmail = normalizeKey(row.currentEmail);
+  const rowLogin = normalizeKey(row.adLoginName);
+  const rowName = normalizePersonName(row.fullNameEng);
+  if (rowEmail === input.email) score += 100;
+  if (input.loginName && rowLogin === input.loginName) score += 90;
+  if (rowLogin === input.emailLocal) score += 80;
+  for (const key of input.nameKeys) {
+    if (rowLogin === key) score += 70;
+    if (rowName === normalizePersonName(key)) score += 60;
+  }
+  if (NORMALIZED_DEFAULT_ADMIN_NAMES.has(rowName)) score += 10;
+  return score;
+}
+
 async function resolveHrIdentityForUser(user: AuthUser): Promise<HrIdentity | null> {
   const email = normalizeKey(user.email);
   const loginName = normalizeKey(user.loginName ?? '');
@@ -128,18 +149,7 @@ async function resolveHrIdentityForUser(user: AuthUser): Promise<HrIdentity | nu
   let best = rows[0]!;
   let bestScore = -1;
   for (const row of rows) {
-    let score = 0;
-    const rowEmail = normalizeKey(row.currentEmail);
-    const rowLogin = normalizeKey(row.adLoginName);
-    const rowName = normalizePersonName(row.fullNameEng);
-    if (rowEmail === email) score += 100;
-    if (loginName && rowLogin === loginName) score += 90;
-    if (rowLogin === emailLocal) score += 80;
-    for (const key of nameKeys) {
-      if (rowLogin === key) score += 70;
-      if (rowName === normalizePersonName(key)) score += 60;
-    }
-    if (NORMALIZED_DEFAULT_ADMIN_NAMES.has(rowName)) score += 10;
+    const score = scoreHrIdentity(row, { email, emailLocal, loginName, nameKeys });
     if (score > bestScore) {
       bestScore = score;
       best = row;
@@ -174,7 +184,7 @@ export async function resolveSessionPermissions(user: AuthUser): Promise<Session
 
   if (isDefaultAdminIdentity(identity, user)) {
     role = 'admin';
-    if (identity) void ensureDefaultAdminRow(identity);
+    if (identity) await ensureDefaultAdminRow(identity);
   } else if (identity?.empCode) {
     role = await lookupRoleByEmpCode(identity.empCode);
   }

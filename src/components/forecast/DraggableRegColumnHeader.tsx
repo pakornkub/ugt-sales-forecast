@@ -24,7 +24,7 @@ export function DraggableRegColumnHeader({
   overrideValue,
   overrideOnChange,
   loadFilterOptions,
-}: {
+}: Readonly<{
   column: OrderedRegColumn;
   allRegistrations: Registration[];
   columnFilters: Record<string, ColumnFilterValue | undefined>;
@@ -44,7 +44,7 @@ export function DraggableRegColumnHeader({
     search: string,
     cursor?: string | null
   ) => Promise<FilterOptionsPage>;
-}) {
+}>) {
   const { key, label, width } = column;
   const filterValue = overrideValue ?? normalizeColumnFilter(columnFilters[key]);
   const handleFilterChange = overrideOnChange ?? ((v: ColumnFilterValue) => onColumnFilterChange(key, v));

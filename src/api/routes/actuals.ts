@@ -489,7 +489,7 @@ export function getCachedScopedActualRange(
   registrationIds: string[],
   granularity: ActualGranularity = 'month'
 ) {
-  const sortedIds = [...new Set(registrationIds)].sort();
+  const sortedIds = [...new Set(registrationIds)].sort((left, right) => left.localeCompare(right));
   const cacheKey = `${granularity}|${startMonth ?? '*'}|${endMonth ?? '*'}|${sortedIds.join('\u001f')}`;
   const cached = scopedActualCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.promise;

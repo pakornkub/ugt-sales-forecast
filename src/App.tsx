@@ -115,6 +115,51 @@ interface InventoryCommitPreviewRow {
   inventory?: InventoryRow;
 }
 
+function ignorePromise(promise: Promise<unknown>) {
+  promise.catch(() => undefined);
+}
+
+function restorePendingForecastEdits(
+  previous: Record<string, PendingForecastEdit>,
+  edits: PendingForecastEdit[]
+) {
+  const restored = { ...previous };
+  for (const edit of edits) {
+    restored[`${edit.registrationId}|${edit.version}|${edit.period}`] = edit;
+  }
+  return restored;
+}
+
+function applyForecastSummaryEdits(
+  previous: ForecastSummary | null,
+  edits: PendingForecastEdit[],
+  selectedVersion: string,
+  forecastMode: 'week' | 'month'
+) {
+  if (!previous) return previous;
+  const periods = previous.periods.map(period => ({ ...period }));
+  const periodIndex = new Map<string, number>(
+    periods.map((period, index) => [period.period, index])
+  );
+  for (const edit of edits) {
+    if (edit.version !== selectedVersion) continue;
+    const displayPeriod = forecastMode === 'month'
+      ? edit.period.slice(0, 7)
+      : edit.period;
+    const index = periodIndex.get(displayPeriod);
+    if (index !== undefined) {
+      periods[index].qtyFcst += edit.currentValue - edit.baseValue;
+    }
+  }
+  return { ...previous, periods };
+}
+
+function deltaTextClass(value: number) {
+  if (value > 0) return 'text-[#007ABE]';
+  if (value < 0) return 'text-rose-600';
+  return 'text-slate-500';
+}
+
 function priceRowsToCplPrices(rows: PriceManagementRow[]): CPLPrice[] {
   return rows.map(row => ({ month: row.month, price: row.cplPrice }));
 }
@@ -219,11 +264,11 @@ function MonthYearPicker({
   value,
   onChange,
   ariaLabel,
-}: {
+}: Readonly<{
   value: string;
   onChange: (value: string) => void;
   ariaLabel: string;
-}) {
+}>) {
   const selectedYear = Number(value.slice(0, 4)) || new Date().getFullYear();
   const selectedMonth = Number(value.slice(5, 7)) - 1;
   const [isOpen, setIsOpen] = useState(false);
@@ -530,7 +575,7 @@ export default function App() {
         if (!cancelled) console.error('[snapshot status] failed:', error);
       }
     };
-    void poll();
+    ignorePromise(poll());
     const timer = window.setInterval(poll, 30_000);
     return () => {
       cancelled = true;
@@ -756,7 +801,7 @@ export default function App() {
 
         const registrationIds = registrationPage.items.map(reg => reg.id);
         if (registrationIds.length === 0) return;
-        void loadInventoryForRegistrations(registrationPage.items, controller.signal);
+        ignorePromise(loadInventoryForRegistrations(registrationPage.items, controller.signal));
 
         setIsTableDataLoading(true);
         const [forecasts, actuals] = await Promise.all([
@@ -876,7 +921,7 @@ export default function App() {
       });
       setRegistrationCursor(page.nextCursor);
       setHasMoreRegistrations(page.hasMore);
-      void loadInventoryForRegistrations(page.items, controller.signal);
+      ignorePromise(loadInventoryForRegistrations(page.items, controller.signal));
 
       if (registrationIds.length > 0) {
         const [forecasts, actuals] = await Promise.all([
@@ -949,7 +994,7 @@ export default function App() {
         setRegistrations(page.items);
         setRegistrationCursor(page.nextCursor);
         setHasMoreRegistrations(page.hasMore);
-        void loadInventoryForRegistrations(page.items, controller.signal);
+        ignorePromise(loadInventoryForRegistrations(page.items, controller.signal));
 
         const registrationIds = page.items.map(reg => reg.id);
         if (registrationIds.length === 0) return;
@@ -985,7 +1030,7 @@ export default function App() {
       }
     }
 
-    void loadFilteredRegistrations();
+    ignorePromise(loadFilteredRegistrations());
     return () => {
       cancelled = true;
       controller.abort();
@@ -1476,18 +1521,6 @@ export default function App() {
     [pendingForecastEdits]
   );
 
-  const pendingOwnerNames = useMemo(() => {
-    const byId = new Map<string, Registration>(
-      registrationsWithInventory.map(registration => [registration.id, registration])
-    );
-    const names = new Set<string>();
-    for (const edit of pendingForecastEditList) {
-      const owner = byId.get(edit.registrationId)?.ownerName?.trim();
-      if (owner) names.add(owner);
-    }
-    return [...names];
-  }, [pendingForecastEditList, registrationsWithInventory]);
-
   const inventoryCommitPreviewRows = useMemo<InventoryCommitPreviewRow[]>(() => {
     const registrationsById = new Map<string, Registration>(
       registrationsWithInventory.map(registration => [registration.id, registration])
@@ -1594,28 +1627,14 @@ export default function App() {
     setInventoryCommitPreviewOpen(false);
     setPendingForecastEdits({});
     setForecastAuditVersion(version => version + 1);
-    setForecastSummary(previous => {
-      if (!previous) return previous;
-      const periods = previous.periods.map(period => ({ ...period }));
-      const periodIndex = new Map<string, number>(
-        periods.map((period, index) => [period.period, index])
-      );
-      editsToCommit.forEach(edit => {
-        if (edit.version !== selectedVersion) return;
-        const displayPeriod = forecastMode === 'month'
-          ? edit.period.slice(0, 7)
-          : edit.period;
-        const index = periodIndex.get(displayPeriod);
-        if (index === undefined) return;
-        periods[index].qtyFcst += edit.currentValue - edit.baseValue;
-      });
-      return { ...previous, periods };
-    });
+    setForecastSummary(previous =>
+      applyForecastSummaryEdits(previous, editsToCommit, selectedVersion, forecastMode)
+    );
     loadStart();
     setTimeout(loadDone, 400);
     setAppError(null);
 
-    void (async () => {
+    const saveForecastUpdates = async () => {
       try {
         await api.forecast.save(updates, committedBy, currentStampPeriod);
         setIsForecastSummaryUpdating(true);
@@ -1632,17 +1651,11 @@ export default function App() {
           setIsForecastSummaryUpdating(false);
         }
       } catch (error) {
-        setPendingForecastEdits(previous => {
-          const restored = { ...previous };
-          editsToCommit.forEach(edit => {
-            const editKey = `${edit.registrationId}|${edit.version}|${edit.period}`;
-            restored[editKey] = edit;
-          });
-          return restored;
-        });
+        setPendingForecastEdits(previous => restorePendingForecastEdits(previous, editsToCommit));
         setAppError(error instanceof ApiError ? error.message : 'Failed to commit forecast updates');
       }
-    })();
+    };
+    ignorePromise(saveForecastUpdates());
   }, [
     authUser,
     forecastMode,
@@ -1668,7 +1681,7 @@ export default function App() {
       !inventoryByRegistrationIdRef.current.has(registration.id)
     );
     if (pendingRegistrations.length > 0) {
-      void loadInventoryForRegistrations(pendingRegistrations);
+      ignorePromise(loadInventoryForRegistrations(pendingRegistrations));
     }
   }, [
     isSaving,
@@ -1760,7 +1773,7 @@ export default function App() {
           (saved.priceFormula || 'CPL') as PriceFormula
         )
       );
-      void loadInventoryForRegistrations([saved]);
+      ignorePromise(loadInventoryForRegistrations([saved]));
       return saved;
     } finally {
       loadDone();
@@ -1791,7 +1804,7 @@ export default function App() {
         mergedRegistrationCacheRef.current.delete(saved.id);
         return next;
       });
-      void loadInventoryForRegistrations([saved]);
+      ignorePromise(loadInventoryForRegistrations([saved]));
       return saved;
     } finally {
       loadDone();
@@ -2225,7 +2238,7 @@ export default function App() {
         open={manageAdminOpen}
         onClose={() => setManageAdminOpen(false)}
         sessionEmpCode={sessionPermissions.empCode}
-        onSaved={() => { void refreshSessionPermissions(); }}
+                onSaved={() => { ignorePromise(refreshSessionPermissions()); }}
       />
 
       <ManageEmailPanel
@@ -2799,7 +2812,7 @@ export default function App() {
                   isInventoryLoading={isInventoryLoading}
                   onClose={() => setInventoryCommitPreviewOpen(false)}
                   onConfirm={executeCommitForecastUpdates}
-                  onPreviewEmail={() => { void handlePreviewCommitEmail(); }}
+                  onPreviewEmail={() => { ignorePromise(handlePreviewCommitEmail()); }}
                   isEmailPreviewLoading={commitEmailPreviewLoading}
                 />
 
@@ -2809,7 +2822,7 @@ export default function App() {
                   loading={commitEmailPreviewLoading}
                   sending={commitEmailSending}
                   sendMessage={commitEmailSendMessage}
-                  onSend={() => { void handleSendCommitEmail(); }}
+                  onSend={() => { ignorePromise(handleSendCommitEmail()); }}
                   onClose={() => {
                     setCommitEmailPreviewOpen(false);
                     setCommitEmailSendMessage(null);
@@ -2843,7 +2856,7 @@ export default function App() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => void handleRefreshSnapshot()}
+                      onClick={() => { ignorePromise(handleRefreshSnapshot()); }}
                       disabled={isRefreshingSnapshot || snapshotStatus?.status === 'syncing'}
                       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 transition-colors hover:border-blue-200 hover:text-[#007ABE] disabled:cursor-wait disabled:opacity-50"
                       title="Refresh source data now"
@@ -3075,7 +3088,7 @@ function InventoryCommitPreviewModal({
   onClose,
   onConfirm,
   onPreviewEmail,
-}: {
+}: Readonly<{
   open: boolean;
   rows: InventoryCommitPreviewRow[];
   isInventoryLoading: boolean;
@@ -3083,7 +3096,7 @@ function InventoryCommitPreviewModal({
   onClose: () => void;
   onConfirm: () => void;
   onPreviewEmail: () => void;
-}) {
+}>) {
   if (!open) return null;
 
   const formatQty = (value: number | undefined) =>
@@ -3099,7 +3112,12 @@ function InventoryCommitPreviewModal({
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px]" onClick={onClose} />
+      <button
+        type="button"
+        className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px]"
+        onClick={onClose}
+        aria-label="Close forecast save preview"
+      />
       <div className="relative flex max-h-[86vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-xl">
         <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 px-5 py-4">
           <div className="flex min-w-0 items-start gap-3">
@@ -3137,7 +3155,7 @@ function InventoryCommitPreviewModal({
             <p className="text-[10px] font-medium text-slate-400">Total forecast delta</p>
             <p className={cn(
               'mt-0.5 font-mono text-xl font-semibold tabular-nums',
-              totalDelta > 0 ? 'text-[#007ABE]' : totalDelta < 0 ? 'text-rose-600' : 'text-slate-800'
+              totalDelta === 0 ? 'text-slate-800' : deltaTextClass(totalDelta)
             )}>
               {totalDelta > 0 ? '+' : ''}{formatQty(totalDelta)}
             </p>
@@ -3199,7 +3217,7 @@ function InventoryCommitPreviewModal({
                   <td className="px-3 py-2.5 text-right font-mono tabular-nums font-medium text-slate-800">{formatQty(row.currentValue)}</td>
                   <td className={cn(
                     'px-3 py-2.5 text-right font-mono tabular-nums font-medium',
-                    row.delta > 0 ? 'text-[#007ABE]' : row.delta < 0 ? 'text-rose-600' : 'text-slate-500'
+                    deltaTextClass(row.delta)
                   )}>
                     {row.delta > 0 ? '+' : ''}{formatQty(row.delta)}
                   </td>
@@ -3463,11 +3481,11 @@ function DetailModal({ onClose, data, registrations }: Readonly<{ onClose: () =>
 
 // --- Component Views ---
 
-function ReportView({ title, description, data, registrations, type, onShowDetail }: { title: string; description: string; data: ForecastValue[]; registrations: Registration[]; type: 'weekly' | 'monthly'; onShowDetail: () => void }) {
+function ReportView({ title, description, data, registrations, type, onShowDetail }: Readonly<{ title: string; description: string; data: ForecastValue[]; registrations: Registration[]; type: 'weekly' | 'monthly'; onShowDetail: () => void }>) {
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
 
   const trendData = useMemo(() => {
-    const months = [...new Set(data.map(d => d.month))].sort();
+    const months = [...new Set(data.map(d => d.month))].sort((left, right) => left.localeCompare(right));
     return months.map(m => ({
       name: format(parseISO(m + '-01'), type === 'weekly' ? 'w\'WW' : 'MMM'),
       act: data.filter(d => d.month === m).reduce((s, c) => s + c.qtyAct, 0),
@@ -3620,8 +3638,8 @@ function ReportView({ title, description, data, registrations, type, onShowDetai
                   paddingAngle={5}
                   dataKey="value"
                 >
-                  {productData.map((_entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  {productData.map((entry, index) => (
+                    <Cell key={entry.name} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>
                 <Tooltip 
@@ -3649,8 +3667,8 @@ function ReportView({ title, description, data, registrations, type, onShowDetai
                 contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
               />
               <Bar dataKey="value" radius={[0, 8, 8, 0]} barSize={24}>
-                {ownerData.map((_entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[(index + 2) % COLORS.length]} />
+                {ownerData.map((entry, index) => (
+                  <Cell key={entry.name} fill={COLORS[(index + 2) % COLORS.length]} />
                 ))}
               </Bar>
             </ReBarChart>
@@ -3673,8 +3691,8 @@ function ReportView({ title, description, data, registrations, type, onShowDetai
                 contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
               />
               <Bar dataKey="variance" radius={[6, 6, 0, 0]} barSize={32}>
-                {trendData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.variance >= 0 ? '#10b981' : '#ef4444'} />
+                {trendData.map(entry => (
+                  <Cell key={entry.name} fill={entry.variance >= 0 ? '#10b981' : '#ef4444'} />
                 ))}
               </Bar>
             </ReBarChart>
@@ -3686,7 +3704,7 @@ function ReportView({ title, description, data, registrations, type, onShowDetai
 );
 }
 
-function InsightItem({ label, value, sub }: { label: string; value: string; sub: string }) {
+function InsightItem({ label, value, sub }: Readonly<{ label: string; value: string; sub: string }>) {
   return (
     <div>
       <p className="text-[10px] text-slate-400 font-bold uppercase">{label}</p>
@@ -3696,7 +3714,18 @@ function InsightItem({ label, value, sub }: { label: string; value: string; sub:
   );
 }
 
-function BudgetView({ title, subtitle, isMtp, registrations }: { title: string; subtitle: string; isMtp?: boolean; registrations: Registration[] }) {
+function budgetPlaceholderFor(registrationId: string, year: string) {
+  const seed = `${registrationId}-${year}`
+    .split('')
+    .reduce((total, char) => total + char.charCodeAt(0), 0);
+  return {
+    volume: (seed * 7919) % 1_000_000,
+    variance: ((seed % 50) / 10).toFixed(1),
+    positive: seed % 2 === 0,
+  };
+}
+
+function BudgetView({ title, subtitle, isMtp, registrations }: Readonly<{ title: string; subtitle: string; isMtp?: boolean; registrations: Registration[] }>) {
   const years = isMtp ? ['2026', '2027', '2028'] : ['FY26 BB', 'FY26 SepF', 'FY26 DecF'];
   
   return (
@@ -3727,15 +3756,20 @@ function BudgetView({ title, subtitle, isMtp, registrations }: { title: string; 
                   <span className="font-bold text-slate-900">{reg.registrationTopic}</span>
                   <p className="text-[10px] text-slate-400">{reg.materialDescription} · {reg.countryName}</p>
                 </td>
-                {years.map(y => (
-                  <td key={y} className="p-4 text-center font-mono">{(Math.random() * 1000000).toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                ))}
+                {years.map(y => {
+                  const placeholder = budgetPlaceholderFor(reg.id, y);
+                  return (
+                    <td key={y} className="p-4 text-center font-mono">
+                      {placeholder.volume.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                    </td>
+                  );
+                })}
                 <td className="p-4 text-center">
                   <span className={cn(
                     "px-2 py-0.5 rounded-full text-[10px] font-bold",
-                    Math.random() > 0.5 ? "bg-green-50 text-green-600" : "bg-red-50 text-red-600"
+                    budgetPlaceholderFor(reg.id, 'variance').positive ? "bg-green-50 text-green-600" : "bg-red-50 text-red-600"
                   )}>
-                    {Math.random() > 0.5 ? '+' : '-'}{(Math.random() * 5).toFixed(1)}%
+                    {budgetPlaceholderFor(reg.id, 'variance').positive ? '+' : '-'}{budgetPlaceholderFor(reg.id, 'variance').variance}%
                   </span>
                 </td>
               </tr>
@@ -3748,7 +3782,7 @@ function BudgetView({ title, subtitle, isMtp, registrations }: { title: string; 
 );
 }
 
-function PdcSummaryView({ data, version, registrations }: { data: ForecastValue[]; version: string; registrations: Registration[] }) {
+function PdcSummaryView({ data, version, registrations }: Readonly<{ data: ForecastValue[]; version: string; registrations: Registration[] }>) {
   const summary = useMemo(() => {
     // Group by product
     const products = [...new Set(registrations.map(r => r.materialDescription))];
@@ -3816,11 +3850,11 @@ function PlaceholderView({
   title,
   icon,
   description,
-}: {
+}: Readonly<{
   title: string;
   icon: React.ReactNode;
   description?: string;
-}) {
+}>) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col items-center justify-center text-center p-12 space-y-4">
       <div className="text-slate-200 animate-pulse">{icon}</div>
@@ -3837,7 +3871,7 @@ function PlaceholderView({
   );
 }
 
-function FilterGroup({ label, action, children }: { label: string; action?: React.ReactNode; children: React.ReactNode }) {
+function FilterGroup({ label, action, children }: Readonly<{ label: string; action?: React.ReactNode; children: React.ReactNode }>) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">

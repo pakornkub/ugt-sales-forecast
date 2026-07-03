@@ -34,7 +34,7 @@ function formatPct(value: number | null | undefined) {
   return value == null ? '—' : `${value.toFixed(1)}%`;
 }
 
-function TableSkeleton({ colSpan }: { readonly colSpan: number }) {
+function TableSkeleton({ colSpan }: Readonly<{ readonly colSpan: number }>) {
   return (
     <>
       {Array.from({ length: 8 }, (_, index) => (
@@ -59,7 +59,7 @@ export function OverplanResultsTable({
   hasMoreRows,
   totalRows,
   onLoadMore,
-}: {
+}: Readonly<{
   readonly rows: OverplanResultRow[];
   readonly view: 'aggregate' | 'detail';
   readonly breachPage: 'over' | 'under';
@@ -70,7 +70,7 @@ export function OverplanResultsTable({
   readonly hasMoreRows: boolean;
   readonly totalRows: number;
   readonly onLoadMore: () => void;
-}) {
+}>) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const colSpan = view === 'detail' ? 9 : 8;
   const emptyMessage = breachPage === 'over'
@@ -115,9 +115,16 @@ export function OverplanResultsTable({
           </thead>
           <tbody className="divide-y divide-slate-100">
             {showInitialSkeleton && <TableSkeleton colSpan={colSpan} />}
-            {!showInitialSkeleton && rows.map((row, index) => (
+            {!showInitialSkeleton && rows.map(row => (
               <tr
-                key={`${row.registrationId ?? row.materialCode}-${row.plantCode}-${row.period}-${index}`}
+                key={[
+                  row.registrationId ?? row.materialCode,
+                  row.plantCode,
+                  row.period,
+                  row.status,
+                  row.leftQty,
+                  row.rightQty,
+                ].join('|')}
                 className="group transition-colors hover:bg-slate-50/80"
                 style={{ minHeight: ROW_HEIGHT_PX }}
               >

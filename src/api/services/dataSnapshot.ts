@@ -295,7 +295,7 @@ export async function ensureSnapshotRefresh() {
     !status.completedAt ||
     Date.now() - status.completedAt.getTime() >= SNAPSHOT_REFRESH_MS
   ) {
-    void triggerSnapshotRefresh().catch(error => {
+    triggerSnapshotRefresh().catch(error => {
       console.error('[snapshot] background refresh failed:', error);
     });
   }
@@ -303,11 +303,11 @@ export async function ensureSnapshotRefresh() {
 
 export function startSnapshotScheduler() {
   if (!USE_LOCAL_SNAPSHOT) return;
-  void ensureSnapshotRefresh().catch(error => {
+  ensureSnapshotRefresh().catch(error => {
     console.error('[snapshot] startup refresh check failed:', error);
   });
   const timer = setInterval(() => {
-    void ensureSnapshotRefresh().catch(error => {
+    ensureSnapshotRefresh().catch(error => {
       console.error('[snapshot] scheduled refresh check failed:', error);
     });
   }, 30_000);
