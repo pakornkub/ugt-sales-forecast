@@ -528,18 +528,52 @@ export function ScrollableMonthGrid({
     }),
     [localQtyFooterTotals, monthsToShow, planningView, selectedDimension, selectedType, summaryByPeriod]
   );
-  const calculatedFooterTotals = useMemo(
+  const summaryAmountFooterTotals = useMemo(
+    () => monthsToShow.map((period, index) => {
+      if (selectedDimension !== 'Amount' || selectedType !== 'Fcst') return null;
+      const summary = summaryByPeriod.get(period);
+      if (summary) return summary.amountFcst ?? 0;
+      return null;
+    }),
+    [monthsToShow, selectedDimension, selectedType, summaryByPeriod]
+  );
+  const summaryWeightedPriceFooterTotals = useMemo(
     () => monthsToShow.map(period => {
+      if (selectedDimension !== 'Price' || selectedType !== 'Fcst') return null;
+      const summary = summaryByPeriod.get(period);
+      if (!summary || summary.qtyFcst <= 0) return null;
+      return (summary.amountFcst ?? 0) / summary.qtyFcst;
+    }),
+    [monthsToShow, selectedDimension, selectedType, summaryByPeriod]
+  );
+  const calculatedFooterTotals = useMemo(
+    () => monthsToShow.map((period, periodIndex) => {
       if (selectedDimension === 'Qty') {
-        return summaryFooterTotals[monthsToShow.indexOf(period)];
+        return summaryFooterTotals[periodIndex];
+      }
+
+      if (selectedDimension === 'Amount' && selectedType === 'Fcst') {
+        const summaryAmount = summaryAmountFooterTotals[periodIndex];
+        if (summaryAmount !== null) return summaryAmount;
       }
 
       if (selectedDimension === 'Price') {
+        if (selectedType === 'Fcst') {
+          const summaryWeightedPrice = summaryWeightedPriceFooterTotals[periodIndex];
+          if (summaryWeightedPrice !== null) return summaryWeightedPrice;
+        }
+
         const getWeightedAverage = (type: ValueType) => {
           let totalQty = 0;
           let weightedAmount = 0;
 
           registrations.forEach(registration => {
+            const formula = resolveRegistrationPriceFormula(formulaMap, registration);
+            const priceMaps = {
+              cpl: cplPriceByMonth,
+              naphtha: naphthaPriceByMonth,
+              benzene: benzenePriceByMonth,
+            };
             const qty = getForecastCellValue(
               registration,
               period,
@@ -551,15 +585,11 @@ export function ScrollableMonthGrid({
               forecastMode,
               planningView,
               forecastIndex,
-              formulaMap.get(registration.id),
+              formula,
               naphthaprices,
               benzeneprices,
               fixedPriceMap,
-              {
-                cpl: cplPriceByMonth,
-                naphtha: naphthaPriceByMonth,
-                benzene: benzenePriceByMonth,
-              }
+              priceMaps,
             ).value;
             const price = getForecastCellValue(
               registration,
@@ -572,18 +602,14 @@ export function ScrollableMonthGrid({
               forecastMode,
               planningView,
               forecastIndex,
-              formulaMap.get(registration.id),
+              formula,
               naphthaprices,
               benzeneprices,
               fixedPriceMap,
-              {
-                cpl: cplPriceByMonth,
-                naphtha: naphthaPriceByMonth,
-                benzene: benzenePriceByMonth,
-              }
+              priceMaps,
             ).value;
 
-            if (!Number.isFinite(qty) || !Number.isFinite(price)) return;
+            if (!Number.isFinite(qty) || !Number.isFinite(price) || qty === 0) return;
             totalQty += qty;
             weightedAmount += qty * price;
           });
@@ -598,6 +624,7 @@ export function ScrollableMonthGrid({
       }
 
       return registrations.reduce((sum, registration) => {
+        const formula = resolveRegistrationPriceFormula(formulaMap, registration);
         const { value } = getForecastCellValue(
           registration,
           period,
@@ -609,7 +636,7 @@ export function ScrollableMonthGrid({
           forecastMode,
           planningView,
           forecastIndex,
-          formulaMap.get(registration.id),
+          formula,
           naphthaprices,
           benzeneprices,
           fixedPriceMap,
@@ -640,7 +667,9 @@ export function ScrollableMonthGrid({
       selectedDimension,
       selectedType,
       selectedVersion,
+      summaryAmountFooterTotals,
       summaryFooterTotals,
+      summaryWeightedPriceFooterTotals,
     ]
   );
 

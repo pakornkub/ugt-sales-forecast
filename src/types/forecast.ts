@@ -181,6 +181,7 @@ export interface ForecastSummaryPeriod {
   period: string;
   qtyAct: number;
   qtyFcst: number;
+  amountFcst: number;
   carryInETD: number;
   carryOutETD: number;
   carryInLoading: number;
