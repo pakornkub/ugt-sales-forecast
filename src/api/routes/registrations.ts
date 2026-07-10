@@ -43,7 +43,7 @@ const managedRegistrationSourceSql = Prisma.sql`
     r.plantName AS PlantName, r.countryCode AS CountryCode, r.endUserCode AS EndUserCode,
     r.endUserExportControl AS EndUserExportControl, r.endUserName AS EndUserName,
     r.productName AS ProductName, r.priceFormula AS PriceFormula,
-    COALESCE(rps.spread, r.spread, 0) AS Spread,
+    COALESCE(NULLIF(LTRIM(RTRIM(rps.spread)), ''), NULLIF(LTRIM(RTRIM(r.spread)), '')) AS Spread,
     r.businessUnit AS BusinessUnit, r.createdBy AS CreatedBy,
     CAST(1 AS BIT) AS IsManaged
   FROM dbo.master_data_crm_registrations r
@@ -78,7 +78,7 @@ export async function getRegistrationSourceSql() {
         r.countryCode AS CountryCode, r.endUserCode AS EndUserCode,
         r.endUserExportControl AS EndUserExportControl, r.endUserName AS EndUserName,
         r.productName AS ProductName, CAST('' AS NVARCHAR(50)) AS PriceFormula,
-        COALESCE(rps.spread, 0) AS Spread, r.businessUnit AS BusinessUnit,
+        NULLIF(LTRIM(RTRIM(rps.spread)), '') AS Spread, r.businessUnit AS BusinessUnit,
         CAST('' AS NVARCHAR(100)) AS CreatedBy,
         CAST(0 AS BIT) AS IsManaged
       FROM dbo.crm_registration_snapshot r
@@ -111,7 +111,7 @@ export async function getRegistrationSourceSql() {
     r.ZoneName, r.PlantName, r.CountryCode, r.EndUserCode,
     r.EndUserExportControl, r.EndUserName, r.ProductName,
     CAST('' AS NVARCHAR(50)) AS PriceFormula,
-    COALESCE(rps.spread, 0) AS Spread,
+    NULLIF(LTRIM(RTRIM(rps.spread)), '') AS Spread,
     ${directCrmBusinessUnitSql},
     CAST('' AS NVARCHAR(100)) AS CreatedBy,
     CAST(0 AS BIT) AS IsManaged
@@ -419,7 +419,12 @@ function mapRegistrationRow(row: Record<string, unknown>) {
     carryInLoading: 0,
     carryOutLoading: 0,
     priceFormula: String(row.PriceFormula ?? row.priceFormula ?? 'CPL'),
-    spread: Number(row.Spread ?? row.spread ?? 0),
+    spread: (() => {
+      const raw = row.Spread ?? row.spread;
+      if (raw === null || raw === undefined) return null;
+      const text = String(raw).trim();
+      return text === '' ? null : text;
+    })(),
   };
 }
 
@@ -466,7 +471,11 @@ function createData(body: Record<string, unknown>) {
       commissionIndirect: decimalValue(body.commissionIndirect),
       commissionFinancialDiscount: decimalValue(body.commissionFinancialDiscount),
       priceFormula: text(body.priceFormula) || 'CPL',
-      spread: decimalValue(body.spread),
+      spread: (() => {
+        if (body.spread === null || body.spread === undefined) return null;
+        const textValue = String(body.spread).trim();
+        return textValue === '' ? null : textValue;
+      })(),
       createdBy: 'sales-forecast-web',
     },
   } as const;

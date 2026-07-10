@@ -16,6 +16,7 @@ import {
   isFirstWednesdayPeriod,
   normalizeKey,
 } from './excelUtils';
+import { upsertRegistrationSpread } from '../registrationPricing';
 import { findRegistrationMatches } from './matching';
 import { normalizeStampPeriod } from './stampPeriod';
 import type {
@@ -26,6 +27,7 @@ import type {
 type ImportColumnFlags = {
   hasPriceColumns: boolean;
   hasAmountColumns: boolean;
+  spreadByRegistrationId?: Record<string, string>;
 };
 
 const LEGACY_IMPORT_COLUMN_FLAGS: ImportColumnFlags = {
@@ -130,6 +132,17 @@ function normalizeChangedBy(changedBy: unknown) {
   return String(changedBy ?? 'sales-forecast-web').trim() || 'sales-forecast-web';
 }
 
+async function applyImportedSpreads(
+  spreadByRegistrationId: Record<string, string> | undefined,
+  changedBy: string,
+) {
+  if (!spreadByRegistrationId) return;
+  const entries = Object.entries(spreadByRegistrationId);
+  for (const [registrationId, spread] of entries) {
+    await upsertRegistrationSpread(registrationId, spread, changedBy);
+  }
+}
+
 function parseLegacyRecords(records: ConfirmLegacyImportRecord[]): ConfirmLegacyImportRecord[] {
   assertRecordCount(records);
   const parsed: ConfirmLegacyImportRecord[] = [];
@@ -229,10 +242,8 @@ async function assertRegistrationMatchesUnchanged(
 
   for (const record of records) {
     const matches = registrationMatches.get(record.excelKeyForNoRegist) ?? [];
-    if (
-      matches.length !== 1 ||
-      matches[0].registrationId !== record.matchedRegistrationId
-    ) {
+    // Preview uses matches[0] even when duplicates exist; confirm must stay consistent.
+    if (matches.length === 0 || matches[0].registrationId !== record.matchedRegistrationId) {
       throw new ForecastImportConfirmError(
         409,
         `Registration matching changed for ${record.excelKeyForNoRegist}. Run Preview again.`,
@@ -466,6 +477,8 @@ export async function confirmLegacyImport(
     }
   }, { timeout: 120_000 });
 
+  await applyImportedSpreads(columnFlags.spreadByRegistrationId, normalizedChangedBy);
+
   clearForecastSummaryCache();
   return buildImportResult(parsedRecords, existingKeys, CURRENT_FORECAST_VERSION, 'week');
 }
@@ -638,6 +651,8 @@ export async function confirmVersionedImport(
       }
     }
   }, { timeout: 120_000 });
+
+  await applyImportedSpreads(columnFlags.spreadByRegistrationId, normalizedChangedBy);
 
   clearForecastSummaryCache();
   return buildImportResult(parsedRecords, existingKeys, versionName, 'month');

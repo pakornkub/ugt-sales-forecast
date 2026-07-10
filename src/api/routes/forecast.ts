@@ -1211,4 +1211,80 @@ router.post('/send-commit-email', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/forecast/copy-version
+ * Body: { sourceVersion, targetVersion }
+ */
+router.post('/copy-version', async (req, res) => {
+  const sourceVersion = typeof req.body?.sourceVersion === 'string'
+    ? req.body.sourceVersion.trim()
+    : '';
+  const targetVersion = typeof req.body?.targetVersion === 'string'
+    ? req.body.targetVersion.trim()
+    : '';
+
+  if (!sourceVersion || !targetVersion) {
+    return res.status(400).json({ error: 'sourceVersion and targetVersion are required' });
+  }
+  if (sourceVersion === targetVersion) {
+    return res.status(400).json({ error: 'sourceVersion and targetVersion must be different' });
+  }
+
+  const [sourceExists, targetExists] = await Promise.all([
+    prisma.forecastVersion.findUnique({ where: { name: sourceVersion }, select: { name: true } }),
+    prisma.forecastVersion.findUnique({ where: { name: targetVersion }, select: { name: true } }),
+  ]);
+  if (!sourceExists || !targetExists) {
+    return res.status(400).json({ error: 'Unknown forecast version' });
+  }
+
+  try {
+    const copied = await prisma.$transaction(async transaction => {
+      const sourceCount = await transaction.forecastValue.count({
+        where: { versionName: sourceVersion },
+      });
+
+      const batch = await transaction.forecastCommitBatch.create({
+        data: {
+          source: 'version_copy',
+          changedBy: DEFAULT_CHANGED_BY,
+          stampPeriod: DEFAULT_STAMP_PERIOD,
+          recordCount: sourceCount,
+        },
+      });
+
+      await transaction.$executeRaw`
+        MERGE [dbo].[forecast_values] AS target
+        USING (
+          SELECT [registrationId], [period], [granularity], [qtyFcst], [priceFcst], [amountFcst]
+          FROM [dbo].[forecast_values]
+          WHERE [versionName] = ${sourceVersion}
+        ) AS source
+        ON target.[registrationId] = source.[registrationId]
+          AND target.[versionName] = ${targetVersion}
+          AND target.[period] = source.[period]
+        WHEN MATCHED THEN
+          UPDATE SET
+            target.[granularity] = source.[granularity],
+            target.[qtyFcst] = source.[qtyFcst],
+            target.[priceFcst] = source.[priceFcst],
+            target.[amountFcst] = source.[amountFcst],
+            target.[lastBatchId] = ${batch.id},
+            target.[updatedAt] = SYSUTCDATETIME()
+        WHEN NOT MATCHED THEN
+          INSERT ([registrationId], [versionName], [period], [granularity], [qtyFcst], [priceFcst], [amountFcst], [lastBatchId], [updatedAt])
+          VALUES (source.[registrationId], ${targetVersion}, source.[period], source.[granularity], source.[qtyFcst], source.[priceFcst], source.[amountFcst], ${batch.id}, SYSUTCDATETIME());
+      `;
+
+      return sourceCount;
+    });
+
+    clearForecastSummaryCache();
+    res.json({ ok: true, copied, sourceVersion, targetVersion });
+  } catch (error) {
+    console.error('[forecast] copy-version error:', error);
+    res.status(500).json({ error: 'Failed to copy forecast version' });
+  }
+});
+
 export default router;

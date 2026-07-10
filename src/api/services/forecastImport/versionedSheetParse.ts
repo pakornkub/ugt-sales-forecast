@@ -8,6 +8,7 @@ import {
   buildExtendedForecastColumns,
   buildSyntheticImportKey,
   findHeaderIndex,
+  findSpreadColumnIndex,
   firstDayOfMonthPeriod,
   firstValue,
   forecastColumnSignature,
@@ -17,6 +18,8 @@ import {
   normalizeKey,
   parseForecastMonthColumn,
   parseForecastNumber,
+  parseSpreadCell,
+  recomputeAggregatedPrices,
   resolveImportMetadataColumns,
 } from './excelUtils';
 import type {
@@ -50,6 +53,7 @@ function mergeExcelGroups(existing: ExcelForecastGroup, incoming: ExcelForecastG
   existing.subApplication = existing.subApplication ?? incoming.subApplication;
   existing.owner = existing.owner ?? incoming.owner;
   existing.businessUnit = existing.businessUnit ?? incoming.businessUnit;
+  existing.spread = existing.spread ?? incoming.spread;
 }
 
 export type VersionedSheetParseResult = {
@@ -159,6 +163,8 @@ export function parseVersionedImportSheet(sheetName: string, sheet: XLSX.WorkShe
   const { columns: forecastColumns, hasPriceColumns, hasAmountColumns } = buildVersionedForecastColumns(header);
   const businessUnitColumnIndex = findHeaderIndex(header, ['BU', 'Business Unit', 'BusinessUnit']);
   const metadataColumns = resolveImportMetadataColumns(header);
+  const spreadColumnIndex = findSpreadColumnIndex(header);
+  const spreadHeader = spreadColumnIndex >= 0 ? normalizeHeader(header[spreadColumnIndex]) : '';
 
   if (normalizeHeader(header[0]) !== KEY_HEADER) {
     headerErrors.push({
@@ -230,6 +236,7 @@ export function parseVersionedImportSheet(sheetName: string, sheet: XLSX.WorkShe
       forecastValues: forecastColumns.map(() => 0),
       priceValues: forecastColumns.map(() => 0),
       amountValues: forecastColumns.map(() => 0),
+      spread: null,
       hasInvalidNumber: false,
     };
 
@@ -250,6 +257,23 @@ export function parseVersionedImportSheet(sheetName: string, sheet: XLSX.WorkShe
       group.businessUnit,
       businessUnitColumnIndex >= 0 ? row[businessUnitColumnIndex] : null
     );
+    if (spreadColumnIndex >= 0) {
+      const rawSpread = row[spreadColumnIndex];
+      if (group.spread === null) {
+        const spreadParsed = parseSpreadCell(rawSpread);
+        if (!spreadParsed.ok) {
+          pushInvalid(
+            sourceRow,
+            key,
+            XLSX.utils.encode_col(spreadColumnIndex),
+            spreadHeader,
+            rawSpread,
+          );
+        } else {
+          group.spread = spreadParsed.value;
+        }
+      }
+    }
 
     forecastColumns.forEach((forecastColumn, forecastIndex) => {
       const qtyRaw = row[forecastColumn.qtyIndex];
@@ -283,6 +307,10 @@ export function parseVersionedImportSheet(sheetName: string, sheet: XLSX.WorkShe
 
     excelGroups.set(key, group);
   });
+
+  for (const group of excelGroups.values()) {
+    recomputeAggregatedPrices(group);
+  }
 
   return {
     sheetName,
@@ -368,6 +396,10 @@ export function mergeVersionedSheetResults(sheetResults: VersionedSheetParseResu
 
       mergeExcelGroups(existing, group);
     }
+  }
+
+  for (const group of excelGroups.values()) {
+    recomputeAggregatedPrices(group);
   }
 
   return {

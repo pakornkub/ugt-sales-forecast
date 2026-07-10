@@ -1,11 +1,29 @@
 import prisma from '../../db/prisma';
 
-function normalizeSpread(value: unknown) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw Object.assign(new Error('Spread must be a non-negative number'), { code: 'VALIDATION' });
+/** Keep raw text (including formula notes). Empty → null. */
+export function normalizeSpread(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw Object.assign(new Error('Spread must be text or a finite number'), { code: 'VALIDATION' });
+    }
+    return String(value);
   }
-  return parsed;
+  const text = String(value).trim();
+  return text === '' ? null : text;
+}
+
+/** Parse numeric-only spread for price math; notes / non-numeric → 0. */
+export function parseNumericSpread(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0;
+  }
+  const text = String(value).trim().replaceAll(',', '');
+  if (text === '') return 0;
+  if (!/^-?\d+(\.\d+)?$/.test(text)) return 0;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export async function upsertRegistrationSpread(

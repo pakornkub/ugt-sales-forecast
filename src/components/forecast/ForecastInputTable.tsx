@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, CheckCircle2, Columns3, Download, FilePlus2, FileSpreadsheet, Info, LoaderCircle, ShieldAlert, Upload, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Columns3, Copy, Download, FilePlus2, FileSpreadsheet, Info, LoaderCircle, ShieldAlert, Upload, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import {
   api,
@@ -18,6 +18,8 @@ import type {
   CPLPrice,
   CarryDetailKey,
   CarryDetailVisibility,
+  CustomColumnDef,
+  CustomColumnValuesMap,
   Dimension,
   ForecastValue,
   ForecastSummary,
@@ -33,6 +35,7 @@ import { FixedColumnsTable } from './FixedColumnsTable';
 import { ResizablePaneLayout } from './ResizablePaneLayout';
 import { ScrollableMonthGrid } from './ScrollableMonthGrid';
 import {
+  getCustomColumnsTotalWidth,
   getRegColumnsTotalWidth,
   REG_PANE_MAX_RATIO,
   REG_PANE_MIN_WIDTH,
@@ -59,9 +62,9 @@ export interface ForecastInputTableProps {
   planningView: 'sale' | 'accounting' | 'production';
   formulaMap: Map<string, PriceFormula>;
   onFormulaChange: (regId: string, formula: PriceFormula) => void;
-  spreadMap: Map<string, number>;
-  onSpreadChange: (regId: string, spread: number) => void;
-  onSpreadCommit: (regId: string, spread: number) => void;
+  spreadMap: Map<string, string>;
+  onSpreadChange: (regId: string, spread: string | null) => void;
+  onSpreadCommit: (regId: string, spread: string | null) => void;
   formulaFilter: ColumnFilterValue;
   onFormulaFilterChange: (v: ColumnFilterValue) => void;
   naphthaprices: CPLPrice[];
@@ -88,6 +91,13 @@ export interface ForecastInputTableProps {
   isForecastSummaryUpdating: boolean;
   forecastAuditVersion: number;
   stampPeriod: string;
+  customColumnDefs?: CustomColumnDef[];
+  customColumnValues?: CustomColumnValuesMap;
+  canManageCustomColumns?: boolean;
+  onOpenManageColumns?: (section?: 'add' | 'manage') => void;
+  onCustomColumnValueChange?: (columnId: string, registrationId: string, value: string | null) => void;
+  onOpenCopyForecast?: () => void;
+  canCopyForecast?: boolean;
 }
 
 function ForecastInputTableComponent({
@@ -129,6 +139,13 @@ function ForecastInputTableComponent({
   isForecastSummaryUpdating,
   forecastAuditVersion,
   stampPeriod,
+  customColumnDefs = [],
+  customColumnValues,
+  canManageCustomColumns = false,
+  onOpenManageColumns,
+  onCustomColumnValueChange,
+  onOpenCopyForecast,
+  canCopyForecast = false,
 }: ForecastInputTableProps) {
   const isScopeDataLoading = isTableDataLoading || Boolean(
     forecastLoadProgress?.active && forecastLoadProgress.version === selectedVersion,
@@ -168,6 +185,22 @@ function ForecastInputTableComponent({
     carryOut: false,
     carryTotal: false,
   });
+  const [customColumnVisibility, setCustomColumnVisibility] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    setCustomColumnVisibility(previous => {
+      const next: Record<string, boolean> = {};
+      for (const column of customColumnDefs) {
+        next[column.id] = previous[column.id] !== false;
+      }
+      return next;
+    });
+  }, [customColumnDefs]);
+
+  const visibleCustomColumns = useMemo(
+    () => customColumnDefs.filter(column => customColumnVisibility[column.id] !== false),
+    [customColumnDefs, customColumnVisibility],
+  );
 
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const [splitContainerWidth, setSplitContainerWidth] = useState(900);
@@ -184,7 +217,8 @@ function ForecastInputTableComponent({
   }, []);
 
   const paneMinWidth = REG_PANE_MIN_WIDTH;
-  const regContentWidth = getRegColumnsTotalWidth(visibleOrderedColumns);
+  const regContentWidth = getRegColumnsTotalWidth(visibleOrderedColumns)
+    + getCustomColumnsTotalWidth(visibleCustomColumns.length, canManageCustomColumns);
   const paneMaxWidth = Math.max(
     regContentWidth,
     Math.floor(splitContainerWidth * REG_PANE_MAX_RATIO)
@@ -201,7 +235,7 @@ function ForecastInputTableComponent({
   });
 
   const setColumnFilter = useCallback(
-    (key: RegColumnKey, value: ColumnFilterValue) => {
+    (key: string, value: ColumnFilterValue) => {
       onColumnFiltersChange(prev => ({ ...prev, [key]: value }));
     },
     [onColumnFiltersChange]
@@ -266,6 +300,13 @@ function ForecastInputTableComponent({
     setCarryDetailVisibility(previous => ({
       ...previous,
       [key]: !previous[key],
+    }));
+  }, []);
+
+  const toggleCustomColumnVisibility = useCallback((columnId: string) => {
+    setCustomColumnVisibility(previous => ({
+      ...previous,
+      [columnId]: previous[columnId] === false,
     }));
   }, []);
 
@@ -335,6 +376,20 @@ function ForecastInputTableComponent({
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={onOpenCopyForecast}
+            disabled={!canCopyForecast}
+            className={cn(
+              'flex items-center gap-1.5 text-[10px] font-bold uppercase px-3 py-1.5 rounded-lg border transition-all duration-200',
+              canCopyForecast
+                ? 'bg-white border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                : 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'
+            )}
+          >
+            <Copy size={12} />
+            Copy
+          </button>
+          <button
+            type="button"
             onClick={() => {
               setSettingsOpen(false);
               setDraftPanelOpen(true);
@@ -394,6 +449,9 @@ function ForecastInputTableComponent({
         onToggleVisibility={toggleColumnVisibility}
         carryDetailVisibility={carryDetailVisibility}
         onToggleCarryDetail={toggleCarryDetail}
+        customColumns={customColumnDefs}
+        customColumnVisibility={customColumnVisibility}
+        onToggleCustomColumnVisibility={toggleCustomColumnVisibility}
       />
 
       <DraftRegistrationPanel
@@ -442,6 +500,11 @@ function ForecastInputTableComponent({
             onScroll={syncFromReg}
             tableWidth={regContentWidth}
             columns={visibleOrderedColumns}
+            customColumns={visibleCustomColumns}
+            customColumnValues={customColumnValues}
+            canManageCustomColumns={canManageCustomColumns}
+            onAddCustomColumn={() => onOpenManageColumns?.('add')}
+            onCustomColumnValueChange={onCustomColumnValueChange}
             registrations={registrations}
             allRegistrations={allRegistrations}
             columnFilters={columnFilters}

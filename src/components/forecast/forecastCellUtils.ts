@@ -90,13 +90,25 @@ export function resolveRegistrationPriceFormula(
   return PRICE_FORMULA_OPTIONS.includes(fromRegistration) ? fromRegistration : 'CPL';
 }
 
+export function parseNumericSpread(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0;
+  }
+  const text = String(value).trim().replaceAll(',', '');
+  if (text === '') return 0;
+  if (!/^-?\d+(\.\d+)?$/.test(text)) return 0;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export function resolveRegistrationSpread(
-  spreadMap: Map<string, number>,
+  spreadMap: Map<string, string>,
   registration: Registration,
 ): number {
   const mapped = spreadMap.get(registration.id);
-  if (mapped !== undefined) return mapped;
-  return Number(registration.spread ?? 0);
+  if (mapped !== undefined) return parseNumericSpread(mapped);
+  return parseNumericSpread(registration.spread);
 }
 
 export function getForecastStoragePeriod(
@@ -133,7 +145,7 @@ export function getForecastCellValue(
     naphtha: Map<string, number>;
     benzene: Map<string, number>;
   },
-  spreadMap?: Map<string, number>,
+  spreadMap?: Map<string, string>,
 ): { value: number; isEditable: boolean } {
   const directItem = forecastIndex
     ? forecastIndex.get(`${reg.id}|${selectedVersion}|${month}`)
@@ -236,7 +248,7 @@ export function getForecastCellValue(
 
   const spread = spreadMap
     ? resolveRegistrationSpread(spreadMap, reg)
-    : Number(reg.spread ?? 0);
+    : parseNumericSpread(reg.spread);
 
   let priceFcst: number;
   const resolvedFormula = formula ?? 'CPL';

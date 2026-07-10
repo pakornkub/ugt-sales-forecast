@@ -2,7 +2,7 @@ import prisma from '../../../db/prisma';
 import { clearActualCaches } from '../../routes/actuals';
 import { clearForecastSummaryCache } from '../../routes/forecast';
 import { businessUnitFromPlantCode } from '../businessUnit';
-import { normalizeCrmCategoryFields } from '../registrationCategory';
+import { normalizeExcelImportCategoryFields } from '../registrationCategory';
 import { applyCustomerMasterNames } from '../registrationNameResolver';
 import { getActiveSnapshotVersion } from '../dataSnapshot';
 import { normalizeKey, primarySourceEntry, unknownToDisplayString } from './excelUtils';
@@ -257,7 +257,7 @@ export function buildRegistrationCreateData(candidate: AutoCreateRegistrationPac
   const onOffSpec = canonicalOnOff(
     candidate.onOffSpec !== 'Unspecified' ? candidate.onOffSpec : codesFromKey.onOffSpec
   );
-  const categories = normalizeCrmCategoryFields(
+  const categories = normalizeExcelImportCategoryFields(
     candidate.process,
     candidate.application,
     candidate.subApp,
@@ -293,7 +293,7 @@ export function buildRegistrationCreateData(candidate: AutoCreateRegistrationPac
       commissionIndirect: 0,
       commissionFinancialDiscount: 0,
       priceFormula: candidate.hasImportedPrice ? 'Fixed Price' : 'CPL',
-      spread: 0,
+      spread: candidate.spread ?? null,
       createdBy: EXCEL_IMPORT_CREATED_BY,
     };
   }
@@ -327,7 +327,7 @@ export function buildRegistrationCreateData(candidate: AutoCreateRegistrationPac
     commissionIndirect: 0,
     commissionFinancialDiscount: 0,
     priceFormula: candidate.hasImportedPrice ? 'Fixed Price' : 'CPL',
-    spread: 0,
+    spread: candidate.spread ?? null,
     createdBy: EXCEL_IMPORT_CREATED_BY,
   };
 }
@@ -449,6 +449,7 @@ function buildPackageBase(
     process: group.process,
     application: group.application,
     subApp: group.subApplication,
+    spread: group.spread,
     hasImportedPrice,
     pendingForecastRecords,
   };

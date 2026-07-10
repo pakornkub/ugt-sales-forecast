@@ -125,7 +125,7 @@ export interface Registration {
   carryInLoading: number;
   carryOutLoading: number;
   priceFormula: string;
-  spread: number;
+  spread: string | null;
   createdBy?: string;
   inventoryA0Qty?: number;
   inventoryNonA0Qty?: number;
@@ -258,6 +258,37 @@ export const EMPTY_COLUMN_FILTER: ColumnFilterValue = {
   searchText: '',
   selectedValues: [],
 };
+
+export type CustomColumnType = 'text' | 'number' | 'dropdown';
+
+export interface CustomColumnDef {
+  id: string;
+  name: string;
+  type: CustomColumnType;
+  dropdownOptions?: string[];
+  defaultValue?: string;
+  displayOrder: number;
+}
+
+export interface CustomColumnValue {
+  columnId: string;
+  registrationId: string;
+  value: string | null;
+}
+
+export type CustomColumnValuesMap = Map<string, Record<string, string | null>>;
+
+export function customColumnFilterKey(columnId: string): string {
+  return `customCol_${columnId}`;
+}
+
+export function isCustomColumnFilterKey(key: string): boolean {
+  return key.startsWith('customCol_');
+}
+
+export function customColumnIdFromFilterKey(key: string): string {
+  return key.replace(/^customCol_/, '');
+}
 
 /** @deprecated Layout is column order only; kept for compatibility if referenced elsewhere. */
 export interface RegTableLayoutState {

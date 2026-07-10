@@ -122,7 +122,7 @@ function emptyRegistration(id = ''): Registration {
     carryInLoading: 0,
     carryOutLoading: 0,
     priceFormula: 'CPL',
-    spread: 0,
+    spread: null,
   };
 }
 

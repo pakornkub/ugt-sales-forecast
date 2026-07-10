@@ -205,7 +205,7 @@ function createActualOnlyRegistration(row: Record<string, unknown>, registration
     carryInLoading: 0,
     carryOutLoading: 0,
     priceFormula: '',
-    spread: 0,
+    spread: null,
   };
 }
 

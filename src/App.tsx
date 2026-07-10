@@ -22,6 +22,7 @@ import {
   Truck,
   X,
   LogOut,
+  Columns3,
   Copy,
   Mail,
   Loader2,
@@ -35,6 +36,7 @@ import { format, addMonths, addDays, getDay, startOfMonth, endOfMonth, parseISO 
 import { cn } from './lib/utils';
 import { ForecastInputTable } from './components/forecast/ForecastInputTable';
 import { ManageAdminPanel } from './components/forecast/ManageAdminPanel';
+import { ManageColumnPanel } from './components/forecast/ManageColumnPanel';
 import { ManageEmailPanel } from './components/forecast/ManageEmailPanel';
 import { ManageRegistrationPanel } from './components/forecast/DraftRegistrationPanel';
 import { NavDropdown, NavDropdownItem } from './components/layout/NavDropdown';
@@ -48,13 +50,17 @@ import {
 } from './components/notifications/NotificationEmailPreviewModal';
 import { buildForecastIndex, getForecastCellValue, getForecastStoragePeriod, monthKey, resolveRegistrationPriceFormula } from './components/forecast/forecastCellUtils';
 import { resolveForecastListGranularity } from './lib/forecastPeriod';
-import { filterRegistrations } from './components/forecast/forecastFilterUtils';
+import { filterRegistrations, matchesCustomColumnFilter } from './components/forecast/forecastFilterUtils';
 import { api, ApiError, FORECAST_BACKGROUND_CHUNK_SIZE, FORECAST_PRIORITY_REGISTRATION_COUNT, REGISTRATION_PAGE_SIZE, formatApiError, type AuthUser, type SessionPermissions, type SnapshotStatus } from './lib/api';
 import { effectivePermissions } from './lib/permissions';
 import {
   EMPTY_COLUMN_FILTER,
   type ColumnFiltersState,
   type ColumnFilterValue,
+  type CustomColumnDef,
+  type CustomColumnValue,
+  customColumnIdFromFilterKey,
+  isCustomColumnFilterKey,
   type ActualValue,
   type CPLPrice,
   type Dimension,
@@ -215,6 +221,36 @@ function ignorePromise(promise: Promise<unknown>) {
   promise.catch(() => undefined);
 }
 
+function mergeCustomColumnValues(
+  previous: Map<string, Record<string, string | null>>,
+  rows: CustomColumnValue[],
+): Map<string, Record<string, string | null>> {
+  const next = new Map(previous);
+  for (const row of rows) {
+    const previousValues = next.get(row.registrationId);
+    const existing: Record<string, string | null> = Object.assign({}, previousValues);
+    existing[row.columnId] = row.value;
+    next.set(row.registrationId, existing);
+  }
+  return next;
+}
+
+async function queryCustomColumnValuesInChunks(
+  registrationIds: string[],
+  columnIds?: string[],
+): Promise<CustomColumnValue[]> {
+  if (registrationIds.length === 0) return [];
+  const chunkSize = 500;
+  const chunks: string[][] = [];
+  for (let index = 0; index < registrationIds.length; index += chunkSize) {
+    chunks.push(registrationIds.slice(index, index + chunkSize));
+  }
+  const results = await Promise.all(
+    chunks.map(chunk => api.customColumns.queryValues(chunk, columnIds)),
+  );
+  return results.flat();
+}
+
 function pendingEditValues<T extends PendingCellEdit>(edits: Record<string, T>): T[] {
   return Object.values(edits);
 }
@@ -236,6 +272,15 @@ function withoutRegistrationEdits<T extends { registrationId: string }>(
 ): Record<string, T> {
   return Object.fromEntries(
     Object.entries(previous).filter(([, edit]) => edit.registrationId !== registrationId)
+  );
+}
+
+function withoutVersionEdits<T extends PendingCellEdit>(
+  previous: Record<string, T>,
+  version: string
+): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(previous).filter(([, edit]) => edit.version !== version)
   );
 }
 
@@ -500,6 +545,8 @@ export default function App() {
   const [openNavMenu, setOpenNavMenu] = useState<'manage' | 'budget' | null>(null);
   const [manageAdminOpen, setManageAdminOpen] = useState(false);
   const [manageEmailOpen, setManageEmailOpen] = useState(false);
+  const [manageColumnsOpen, setManageColumnsOpen] = useState(false);
+  const [manageColumnsInitialSection, setManageColumnsInitialSection] = useState<'add' | 'manage'>('add');
   const [manageRegistrationOpen, setManageRegistrationOpen] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const [isAddingVersion, setIsAddingVersion] = useState(false);
@@ -508,14 +555,19 @@ export default function App() {
   const [editingVersionName, setEditingVersionName] = useState('');
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [isCopyingPriceVersion, setIsCopyingPriceVersion] = useState(false);
+  const [isCopyingForecastVersion, setIsCopyingForecastVersion] = useState(false);
   const [selectedFy, setSelectedFy] = useState(2026);
   const [priceManagementType, setPriceManagementType] = useState<PriceManagementType>('Fcst');
   const [priceManagementVersion, setPriceManagementVersion] = useState(CURRENT_FORECAST_VERSION);
   const [priceManagementRows, setPriceManagementRows] = useState<PriceManagementRow[]>([]);
   const [copySourceVersion, setCopySourceVersion] = useState(CURRENT_FORECAST_VERSION);
+  const [copyForecastSourceVersion, setCopyForecastSourceVersion] = useState(CURRENT_FORECAST_VERSION);
   const cplTableRef = useRef<HTMLDivElement>(null);
   const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [managedRegistrations, setManagedRegistrations] = useState<Registration[]>([]);
+  const [customColumnDefs, setCustomColumnDefs] = useState<CustomColumnDef[]>([]);
+  const [customColumnValues, setCustomColumnValues] = useState<Map<string, Record<string, string | null>>>(new Map());
+  const customColumnValuesRef = useRef(customColumnValues);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>(() => loadStoredBusinessUnitFilter());
   const [forecastData, setForecastData] = useState<ForecastValue[]>([]);
   const forecastDataRef = useRef<ForecastValue[]>([]);
@@ -561,11 +613,16 @@ export default function App() {
   const handleFormulaChange = useCallback((regId: string, formula: PriceFormula) => {
     setFormulaMap(prev => new Map(prev).set(regId, formula));
   }, []);
-  const [spreadMap, setSpreadMap] = useState<Map<string, number>>(new Map());
-  const handleSpreadChange = useCallback((regId: string, spread: number) => {
-    setSpreadMap(prev => new Map(prev).set(regId, spread));
+  const [spreadMap, setSpreadMap] = useState<Map<string, string>>(new Map());
+  const handleSpreadChange = useCallback((regId: string, spread: string | null) => {
+    setSpreadMap(prev => {
+      const next = new Map(prev);
+      if (spread === null || spread === '') next.delete(regId);
+      else next.set(regId, spread);
+      return next;
+    });
   }, []);
-  const handleSpreadCommit = useCallback(async (regId: string, spread: number) => {
+  const handleSpreadCommit = useCallback(async (regId: string, spread: string | null) => {
     const committedBy = authUser?.name || authUser?.email || 'sales-forecast-web';
     try {
       await api.registrations.updateSpread(regId, spread, committedBy);
@@ -584,6 +641,46 @@ export default function App() {
       setAppError(error instanceof ApiError ? error.message : 'Failed to save spread');
     }
   }, [authUser?.email, authUser?.name]);
+  const handleCustomColumnValueChange = useCallback(async (
+    columnId: string,
+    registrationId: string,
+    value: string | null,
+  ) => {
+    setCustomColumnValues(previous => {
+      const next = new Map(previous);
+      const previousValues = next.get(registrationId);
+      const existing: Record<string, string | null> = Object.assign({}, previousValues);
+      existing[columnId] = value;
+      next.set(registrationId, existing);
+      return next;
+    });
+    try {
+      await api.customColumns.upsertValue(columnId, registrationId, value);
+      setAppError(null);
+    } catch (error) {
+      setAppError(error instanceof ApiError ? error.message : 'Failed to save custom column value');
+      ignorePromise(
+        queryCustomColumnValuesInChunks([registrationId], [columnId]).then(rows => {
+          setCustomColumnValues(previous => mergeCustomColumnValues(previous, rows));
+        }),
+      );
+    }
+  }, []);
+  const handleCustomColumnsChanged = useCallback((columns: CustomColumnDef[]) => {
+    setCustomColumnDefs(columns);
+    const activeColumnIds = new Set(columns.map(column => column.id));
+    setColumnFilters(previous => {
+      const nextEntries = Object.entries(previous).filter(([key]) => {
+        if (!isCustomColumnFilterKey(key)) return true;
+        return activeColumnIds.has(customColumnIdFromFilterKey(key));
+      });
+      return Object.fromEntries(nextEntries);
+    });
+  }, []);
+  const openManageColumns = useCallback((section: 'add' | 'manage' = 'add') => {
+    setManageColumnsInitialSection(section);
+    setManageColumnsOpen(true);
+  }, []);
   const [fixedPriceMap, setFixedPriceMap] = useState<Map<string, Map<string, number>>>(new Map());
   const handleFixedPriceChange = useCallback((regId: string, month: string, price: number) => {
     if (!Number.isFinite(price) || price < 0) return;
@@ -710,6 +807,7 @@ export default function App() {
   const isLoadingMoreRef = useRef(false);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
   const registrationLoadGenerationRef = useRef(0);
+  const loadedCustomValueRegistrationIdsRef = useRef<Set<string>>(new Set());
   const initialForecastLoadCompleteRef = useRef(false);
   const [initialForecastLoadComplete, setInitialForecastLoadComplete] = useState(false);
   const selectedVersionRef = useRef(selectedVersion);
@@ -1515,6 +1613,53 @@ export default function App() {
   }, [mergeActualsIntoForecastState]);
 
   useEffect(() => {
+    customColumnValuesRef.current = customColumnValues;
+  }, [customColumnValues]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.customColumns.list()
+      .then(columns => {
+        if (!cancelled) setCustomColumnDefs(columns);
+      })
+      .catch(error => {
+        if (!cancelled) {
+          console.error('[custom-columns] initial load failed:', error);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (customColumnDefs.length === 0) return;
+    const pendingIds = registrations
+      .map(registration => registration.id)
+      .filter(id => !loadedCustomValueRegistrationIdsRef.current.has(id));
+    if (pendingIds.length === 0) return;
+
+    let cancelled = false;
+    ignorePromise(
+      queryCustomColumnValuesInChunks(pendingIds).then(rows => {
+        if (cancelled) return;
+        for (const id of pendingIds) {
+          loadedCustomValueRegistrationIdsRef.current.add(id);
+        }
+        setCustomColumnValues(previous => mergeCustomColumnValues(previous, rows));
+      }).catch(error => {
+        if (!cancelled) {
+          console.error('[custom-columns] value load failed:', error);
+        }
+      }),
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [customColumnDefs, registrations]);
+
+  useEffect(() => {
     if (!manageRegistrationOpen) return;
 
     let cancelled = false;
@@ -1827,6 +1972,7 @@ export default function App() {
 
     const generation = registrationLoadGenerationRef.current + 1;
     registrationLoadGenerationRef.current = generation;
+    loadedCustomValueRegistrationIdsRef.current.clear();
     loadMoreAbortRef.current?.abort();
     abortForecastBackgroundLoad();
     isLoadingMoreRef.current = false;
@@ -2201,8 +2347,22 @@ export default function App() {
         formulaFilter.selectedValues.includes(formulaMap.get(reg.id) ?? 'CPL')
       );
     }
+    const customColumnFilters = (Object.entries(columnFilters) as Array<[string, ColumnFilterValue]>)
+      .filter(([key, filter]) => isCustomColumnFilterKey(key) && filter.selectedValues.length > 0);
+    if (customColumnFilters.length > 0) {
+      regs = regs.filter(reg =>
+        customColumnFilters.every(([key, filter]) =>
+          matchesCustomColumnFilter(
+            reg.id,
+            customColumnIdFromFilterKey(key),
+            filter,
+            customColumnValues,
+          )
+        )
+      );
+    }
     return regs;
-  }, [columnFilters, formulaFilter, formulaMap, registrationsWithInventory]);
+  }, [columnFilters, customColumnValues, formulaFilter, formulaMap, registrationsWithInventory]);
 
   const displayedRegistrations = useMemo(() => {
     return filteredRegistrations;
@@ -2543,7 +2703,7 @@ export default function App() {
         carryInLoading: 0,
         carryOutLoading: 0,
         priceFormula: 'CPL',
-        spread: 0,
+        spread: null,
       };
       const materialKey = `${fallbackRegistration.plantCode}|${fallbackRegistration.materialCode}`;
       return {
@@ -3012,6 +3172,75 @@ export default function App() {
     versions,
   ]);
 
+  const openCopyForecastModal = useCallback(() => {
+    const source = versions.find(version => version !== selectedVersion)
+      ?? versions[0]
+      ?? CURRENT_FORECAST_VERSION;
+    setCopyForecastSourceVersion(source);
+    setIsCopyingForecastVersion(true);
+  }, [selectedVersion, versions]);
+
+  const handleCopyForecastVersion = useCallback(async () => {
+    const targetVersion = selectedVersion;
+    loadStart();
+    setIsSaving(true);
+    try {
+      await api.forecast.copyVersion(copyForecastSourceVersion, targetVersion);
+
+      setPendingForecastEdits(previous => withoutVersionEdits(previous, targetVersion));
+      setPendingPriceEdits(previous => withoutVersionEdits(previous, targetVersion));
+      setPendingAmountEdits(previous => withoutVersionEdits(previous, targetVersion));
+
+      forecastWriteEpochRef.current += 1;
+      forecastScopeCacheRef.current.scopes.delete(
+        buildForecastScopeKey(targetVersion, dateRange, forecastMode)
+      );
+
+      const registrationIds = registrations.map(registration => registration.id);
+      if (registrationIds.length > 0) {
+        const actualGranularity = resolveForecastListGranularity(targetVersion, forecastMode);
+        const [forecasts, actuals] = await Promise.all([
+          api.forecast.list({
+            ...buildScopedForecastQuery(registrationIds, dateRange, targetVersion, forecastMode),
+          }),
+          api.actuals.list(
+            dateRange.start.slice(0, 7),
+            dateRange.end.slice(0, 7),
+            registrationIds,
+            {},
+            actualGranularity
+          ),
+        ]);
+        mergeLoadedForecastData(
+          forecasts,
+          actuals,
+          versions.length > 0 ? versions : [targetVersion]
+        );
+      }
+
+      setForecastSummary(null);
+      setForecastAuditVersion(version => version + 1);
+      setIsCopyingForecastVersion(false);
+      setAppError(null);
+    } catch (error) {
+      const msg = error instanceof ApiError ? error.message : 'Failed to copy forecast version';
+      setAppError(msg);
+    } finally {
+      setIsSaving(false);
+      loadDone();
+    }
+  }, [
+    copyForecastSourceVersion,
+    dateRange,
+    forecastMode,
+    loadDone,
+    loadStart,
+    mergeLoadedForecastData,
+    registrations,
+    selectedVersion,
+    versions,
+  ]);
+
   const exportToExcel = async () => {
     loadStart();
     try {
@@ -3116,6 +3345,7 @@ export default function App() {
   const isManageNavActive = activeTab === 'master'
     || manageAdminOpen
     || manageEmailOpen
+    || manageColumnsOpen
     || manageRegistrationOpen;
   const isBudgetNavActive = activeTab === 'mtp' || activeTab === 'yearly';
   const displayUserName = authUser?.name || authUser?.email || 'User';
@@ -3207,6 +3437,16 @@ export default function App() {
                   onClick={() => {
                     setOpenNavMenu(null);
                     setManageEmailOpen(true);
+                  }}
+                />
+              )}
+              {sessionPermissions.canManageAdmin && (
+                <NavDropdownItem
+                  label="Columns"
+                  icon={<Columns3 size={14} />}
+                  onClick={() => {
+                    setOpenNavMenu(null);
+                    openManageColumns('manage');
                   }}
                 />
               )}
@@ -3360,6 +3600,13 @@ export default function App() {
       <ManageEmailPanel
         open={manageEmailOpen}
         onClose={() => setManageEmailOpen(false)}
+      />
+
+      <ManageColumnPanel
+        open={manageColumnsOpen}
+        initialSection={manageColumnsInitialSection}
+        onClose={() => setManageColumnsOpen(false)}
+        onColumnsChanged={handleCustomColumnsChanged}
       />
 
       <ManageRegistrationPanel
@@ -3900,6 +4147,13 @@ export default function App() {
                   isForecastSummaryUpdating={isForecastSummaryUpdating}
                   forecastAuditVersion={forecastAuditVersion}
                   stampPeriod={stampPeriod}
+                  customColumnDefs={customColumnDefs}
+                  customColumnValues={customColumnValues}
+                  canManageCustomColumns={sessionPermissions.canManageAdmin}
+                  onOpenManageColumns={openManageColumns}
+                  onCustomColumnValueChange={handleCustomColumnValueChange}
+                  onOpenCopyForecast={openCopyForecastModal}
+                  canCopyForecast={versions.length >= 2}
                 />
 
                 <InventoryCommitPreviewModal
@@ -4131,6 +4385,18 @@ export default function App() {
         </main>
       </div>
 
+      {isCopyingForecastVersion && (
+        <CopyForecastVersionModal
+          versions={versions}
+          sourceVersion={copyForecastSourceVersion}
+          targetVersion={selectedVersion}
+          isSaving={isSaving}
+          onSourceChange={setCopyForecastSourceVersion}
+          onClose={() => setIsCopyingForecastVersion(false)}
+          onCopy={() => { ignorePromise(handleCopyForecastVersion()); }}
+        />
+      )}
+
       {isCopyingPriceVersion && (
         <CopyPriceVersionModal
           fy={selectedFy}
@@ -4361,6 +4627,131 @@ function InventoryCommitPreviewModal({
             </button>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function CopyForecastVersionModal({
+  versions,
+  sourceVersion,
+  targetVersion,
+  isSaving,
+  onSourceChange,
+  onClose,
+  onCopy,
+}: Readonly<{
+  versions: string[];
+  sourceVersion: string;
+  targetVersion: string;
+  isSaving: boolean;
+  onSourceChange: (version: string) => void;
+  onClose: () => void;
+  onCopy: () => void;
+}>) {
+  const sourceOptions = versions.filter(version => version !== targetVersion);
+  const selectedSource = sourceOptions.includes(sourceVersion)
+    ? sourceVersion
+    : sourceOptions[0] ?? '';
+
+  useEffect(() => {
+    if (selectedSource && selectedSource !== sourceVersion) onSourceChange(selectedSource);
+  }, [onSourceChange, selectedSource, sourceVersion]);
+
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+      <button
+        type="button"
+        className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px]"
+        aria-label="Close copy forecast version dialog"
+        onClick={onClose}
+      />
+      <div className="relative w-full max-w-lg overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-xl">
+        <header className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#007ABE]/10 text-[#007ABE]">
+              <Copy size={18} />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-base font-semibold tracking-tight text-slate-900">
+                Copy forecast version
+              </h3>
+              <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
+                Copy all registration forecast values into the target version
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="space-y-4 px-5 py-4">
+          <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
+            <div>
+              <label htmlFor="copy-forecast-source-version" className="mb-1.5 block text-[11px] font-medium text-slate-500">
+                Copy from
+              </label>
+              <div className="relative">
+                <select
+                  id="copy-forecast-source-version"
+                  value={selectedSource}
+                  onChange={event => onSourceChange(event.target.value)}
+                  className="sf-select h-10 w-full appearance-none rounded-lg border px-3 pr-9 text-sm outline-none"
+                >
+                  {sourceOptions.map(version => (
+                    <option key={version} value={version}>{version}</option>
+                  ))}
+                </select>
+                <ChevronRight
+                  size={14}
+                  className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 rotate-90 text-slate-400"
+                />
+              </div>
+            </div>
+
+            <div className="flex h-10 items-center justify-center pb-0.5 text-slate-300">
+              <ChevronRight size={18} />
+            </div>
+
+            <div>
+              <p className="mb-1.5 text-[11px] font-medium text-slate-500">Copy to</p>
+              <div className="flex h-10 items-center rounded-lg border border-slate-200 bg-slate-50 px-3">
+                <p className="truncate text-sm font-semibold text-slate-800">{targetVersion}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-amber-100 bg-amber-50/60 px-3.5 py-3">
+            <p className="text-xs leading-relaxed text-amber-900/80">
+              This replaces all forecast qty, price, and amount values in <span className="font-semibold">{targetVersion}</span> with data from the source version. Spread and price formula are not copied.
+            </p>
+          </div>
+        </div>
+
+        <footer className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3.5">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 rounded-lg border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onCopy}
+            disabled={isSaving || !selectedSource}
+            className="inline-flex h-9 min-w-[120px] items-center justify-center gap-1.5 rounded-lg bg-[#007ABE] px-4 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#0069a3] disabled:opacity-50"
+          >
+            {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Copy size={14} />}
+            {isSaving ? 'Copying…' : 'Confirm copy'}
+          </button>
+        </footer>
       </div>
     </div>
   );

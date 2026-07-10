@@ -114,7 +114,7 @@ interface ScrollableMonthGridProps {
   forecastMode: 'month' | 'week' | 'day';
   planningView: 'sale' | 'accounting' | 'production';
   formulaMap: Map<string, PriceFormula>;
-  spreadMap: Map<string, number>;
+  spreadMap: Map<string, string>;
   naphthaprices: CPLPrice[];
   benzeneprices: CPLPrice[];
   fixedPriceMap: Map<string, Map<string, number>>;

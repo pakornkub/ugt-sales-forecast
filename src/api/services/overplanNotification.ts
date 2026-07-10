@@ -7,6 +7,10 @@ import {
 } from './emailTemplates';
 import { buildForecastChangeBatches } from './notificationPreview';
 import type { OverplanResultRow } from './overplanEvaluation';
+import {
+  loadNotifyEnabledCcRecipients,
+  mapCcRecipientsToEmails,
+} from './forecastCcRecipients';
 
 type OverplanNotificationInput = {
   detailRows: OverplanResultRow[];
@@ -15,11 +19,9 @@ type OverplanNotificationInput = {
   compareRight: string;
 };
 
-async function loadActiveRecipients(reportType: string) {
-  return prisma.overplanRecipient.findMany({
-    where: { reportType, isActive: true },
-    orderBy: [{ sortOrder: 'asc' }, { email: 'asc' }],
-  });
+async function loadOverplanCcEmails() {
+  const recipients = await loadNotifyEnabledCcRecipients();
+  return mapCcRecipientsToEmails(recipients);
 }
 
 export async function sendOverplanNotificationEmails(input: OverplanNotificationInput) {
@@ -27,15 +29,15 @@ export async function sendOverplanNotificationEmails(input: OverplanNotification
     return { sent: 0, skipped: 'email_disabled' as const };
   }
 
-  const [aggregateRecipients, nonAggregateRecipients] = await Promise.all([
-    loadActiveRecipients('aggregate'),
-    loadActiveRecipients('non_aggregate'),
-  ]);
+  const ccEmails = await loadOverplanCcEmails();
+  if (ccEmails.length === 0) {
+    return { sent: 0, skipped: 'no_recipients_or_rows' as const };
+  }
 
   const generatedAt = new Date().toLocaleString('en-GB', { hour12: false });
   let sent = 0;
 
-  if (input.aggregateRows.length > 0 && aggregateRecipients.length > 0) {
+  if (input.aggregateRows.length > 0) {
     const email = buildOverplanAggregateEmail({
       rows: input.aggregateRows,
       compareLeft: input.compareLeft,
@@ -44,16 +46,14 @@ export async function sendOverplanNotificationEmails(input: OverplanNotification
       generatedAt,
     });
     await sendEmail({
-      to: aggregateRecipients.map(recipient => recipient.email),
+      to: ccEmails,
       subject: email.subject,
       html: email.html,
     });
     sent += 1;
   }
 
-  const nonAggregateTo = nonAggregateRecipients.map(recipient => recipient.email);
-
-  if (input.detailRows.length > 0 && nonAggregateTo.length > 0) {
+  if (input.detailRows.length > 0) {
     const email = buildOverplanDetailEmail({
       rows: input.detailRows,
       compareLeft: input.compareLeft,
@@ -62,7 +62,7 @@ export async function sendOverplanNotificationEmails(input: OverplanNotification
       generatedAt,
     });
     await sendEmail({
-      to: nonAggregateTo,
+      to: ccEmails,
       subject: email.subject,
       html: email.html,
     });

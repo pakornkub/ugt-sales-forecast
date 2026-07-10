@@ -2,6 +2,8 @@ import type { RegColumnKey } from '../../types/forecast';
 import { REG_COLUMN_KEYS } from '../../types/forecast';
 
 export const REG_COLUMN_WIDTH = 120;
+export const CUSTOM_COLUMN_WIDTH = 120;
+export const CUSTOM_COLUMN_ADD_BUTTON_WIDTH = 40;
 export const MONTH_COLUMN_WIDTH = 110;
 export const FORMULA_COLUMN_WIDTH = 130;
 export const SPREAD_COLUMN_WIDTH = 90;
@@ -77,15 +79,20 @@ const columnDefMap = Object.fromEntries(
   ALL_REG_COLUMNS.map(col => [col.key, col])
 ) as Record<RegColumnKey, RegColumnDef>;
 
+const baseColumnOrder = REG_COLUMN_KEYS.filter(
+  key => key !== 'priceFormula' && key !== 'spread',
+);
+const carryOutLoadingIndex = baseColumnOrder.indexOf('carryOutLoading');
+
 export const DEFAULT_COLUMN_ORDER: RegColumnKey[] = [
+  ...baseColumnOrder.slice(0, carryOutLoadingIndex + 1),
   'priceFormula',
   'spread',
-  ...REG_COLUMN_KEYS.filter(key => key !== 'priceFormula' && key !== 'spread'),
+  ...baseColumnOrder.slice(carryOutLoadingIndex + 1),
 ];
+
 // Limit default visible columns to an approved, sensible subset
 export const DEFAULT_VISIBLE_COLUMN_KEYS: RegColumnKey[] = [
-  'priceFormula',
-  'spread',
   'ownerName',
   'businessUnit',
   'registrationTopic',
@@ -102,6 +109,8 @@ export const DEFAULT_VISIBLE_COLUMN_KEYS: RegColumnKey[] = [
   'carryOutETD',
   'carryInLoading',
   'carryOutLoading',
+  'priceFormula',
+  'spread',
   'plantName',
   'countryName',
   'shipTo_name',
@@ -130,6 +139,11 @@ export function getOrderedColumns(columnOrder: RegColumnKey[]): OrderedRegColumn
 
 export function getRegColumnsTotalWidth(columns: OrderedRegColumn[]): number {
   return columns.reduce((sum, col) => sum + col.width, 0);
+}
+
+export function getCustomColumnsTotalWidth(columnCount: number, includeAddButton = false): number {
+  if (columnCount === 0 && !includeAddButton) return 0;
+  return (columnCount * CUSTOM_COLUMN_WIDTH) + (includeAddButton ? CUSTOM_COLUMN_ADD_BUTTON_WIDTH : 0);
 }
 
 export function reorderColumns(

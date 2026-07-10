@@ -1,5 +1,8 @@
-import prisma from '../../db/prisma';
 import type { OverplanResultRow } from './overplanEvaluation';
+import {
+  loadNotifyEnabledCcRecipients,
+  mapCcRecipientsToPreview,
+} from './forecastCcRecipients';
 import {
   buildForecastChangeEmail,
   buildOverplanAggregateEmail,
@@ -23,13 +26,6 @@ export type EmailBatchPreview = {
   previewOnly: true;
 };
 
-async function loadActiveRecipients(reportType: string) {
-  return prisma.overplanRecipient.findMany({
-    where: { reportType, isActive: true },
-    orderBy: [{ sortOrder: 'asc' }, { email: 'asc' }],
-  });
-}
-
 function periodLabel(startMonth: string, endMonth: string) {
   return `${startMonth} → ${endMonth}`;
 }
@@ -45,11 +41,7 @@ export async function buildOverplanNotificationPreviews(input: {
   const generatedAt = new Date().toLocaleString('en-GB', { hour12: false });
   const period = periodLabel(input.startMonth, input.endMonth);
   const previews: EmailBatchPreview[] = [];
-
-  const [aggregateRecipients, nonAggregateRecipients] = await Promise.all([
-    loadActiveRecipients('aggregate'),
-    loadActiveRecipients('non_aggregate'),
-  ]);
+  const ccRecipients = mapCcRecipientsToPreview(await loadNotifyEnabledCcRecipients());
 
   if (input.aggregateRows.length > 0) {
     const email = buildOverplanAggregateEmail({
@@ -68,11 +60,7 @@ export async function buildOverplanNotificationPreviews(input: {
       html: email.html,
       rowCount: input.aggregateRows.length,
       previewOnly: true,
-      recipients: aggregateRecipients.map(recipient => ({
-        email: recipient.email,
-        displayName: recipient.displayName || recipient.email,
-        source: 'distribution',
-      })),
+      recipients: ccRecipients,
     });
   }
 
@@ -94,11 +82,7 @@ export async function buildOverplanNotificationPreviews(input: {
       html: email.html,
       rowCount: input.detailRows.length,
       previewOnly: true,
-      recipients: nonAggregateRecipients.map(recipient => ({
-        email: recipient.email,
-        displayName: recipient.displayName || recipient.email,
-        source: 'distribution',
-      })),
+      recipients: ccRecipients,
     });
   }
   return previews;
@@ -114,13 +98,6 @@ export type ForecastChangeItem = {
   newQtyFcst: number;
 };
 
-async function loadActiveCcRecipients() {
-  return prisma.forecastCcRecipient.findMany({
-    where: { notifyEnabled: true },
-    orderBy: [{ sortOrder: 'asc' }, { fullNameEng: 'asc' }],
-  });
-}
-
 /// Build forecast change email: one combined CC batch (all rows) to ticked recipients.
 export async function buildForecastChangeBatches(input: {
   changedBy: string;
@@ -129,18 +106,8 @@ export async function buildForecastChangeBatches(input: {
   const generatedAt = new Date().toLocaleString('en-GB', { hour12: false });
   if (input.changes.length === 0) return [];
 
-  const ccConfig = await loadActiveCcRecipients();
-  const ccRecipients: EmailRecipientPreview[] = [];
-  for (const recipient of ccConfig) {
-    const email = recipient.currentEmail.trim().toLowerCase();
-    if (!email) continue;
-    if (ccRecipients.some(item => item.email === email)) continue;
-    ccRecipients.push({
-      email,
-      displayName: recipient.fullNameEng || email,
-      source: 'distribution',
-    });
-  }
+  const ccConfig = await loadNotifyEnabledCcRecipients();
+  const ccRecipients = mapCcRecipientsToPreview(ccConfig);
 
   const ccEmail = buildForecastChangeEmail({
     changedBy: input.changedBy,

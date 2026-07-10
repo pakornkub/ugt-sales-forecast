@@ -14,6 +14,7 @@ import syncRouter from './api/routes/sync';
 import overplanRouter from './api/routes/overplan';
 import forecastEmailRouter, { createEmployeeRouter } from './api/routes/forecastEmail';
 import appAdminRouter from './api/routes/appAdmin';
+import customColumnsRouter from './api/routes/customColumns';
 import { startSnapshotScheduler } from './api/services/dataSnapshot';
 import { startOverplanScheduler } from './api/services/overplanWarmup';
 import { ensureHrEmployeeCache } from './api/services/employeeEmail';
@@ -46,6 +47,7 @@ apiRouter.use('/sync', syncRouter);
 apiRouter.use('/overplan', overplanRouter);
 apiRouter.use('/forecast-email', forecastEmailRouter);
 apiRouter.use('/admin', appAdminRouter);
+apiRouter.use('/custom-columns', customColumnsRouter);
 apiRouter.use('/employees', createEmployeeRouter());
 
 app.use(`${basePath}/auth`, createAuthRouter());

@@ -141,6 +141,7 @@ export type ExcelForecastGroup = {
   forecastValues: number[];
   priceValues: number[];
   amountValues: number[];
+  spread: string | null;
   hasInvalidNumber: boolean;
 };
 
@@ -215,6 +216,7 @@ export type AutoCreateRegistrationPackage = {
   process: string | null;
   application: string | null;
   subApp: string | null;
+  spread: string | null;
   hasImportedPrice: boolean;
   pendingForecastRecords: PendingImportForecastRecord[];
 };

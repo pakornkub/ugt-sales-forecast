@@ -29,6 +29,7 @@ import {
   buildVersionedAutoCreatePackage,
   collectAutoCreateCandidates,
 } from './autoCreateRegistrations';
+import { buildSpreadByRegistrationId } from './importSpread';
 import { storePreviewCache } from './previewCache';
 import type {
   AmountMismatchWarning,
@@ -284,6 +285,7 @@ export async function buildVersionedImportPreview(
     findRegistrationMatches([...excelGroups.keys()]),
     findActualSummaries([...excelGroups.keys()], forecastColumns),
   ]);
+  const spreadByRegistrationId = buildSpreadByRegistrationId(excelGroups, registrationMatches);
 
   const unmatchedRows: UnmatchedRowDiagnostic[] = [];
   const duplicateRegistrationMatches: Array<{
@@ -547,6 +549,7 @@ export async function buildVersionedImportPreview(
     versionedHasAmountColumns: hasAmountColumns,
     amountMismatchCount: amountMismatchWarnings.length,
     autoCreateCandidates,
+    spreadByRegistrationId,
   });
 
   return {

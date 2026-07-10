@@ -43,11 +43,8 @@ export function getRegistrationFieldValue(reg: Registration, key: string): strin
       maximumFractionDigits: 3,
     });
   }
-  if (key === 'spread' && typeof value === 'number') {
-    return value.toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 4,
-    });
+  if (key === 'spread') {
+    return String(value ?? '');
   }
   return String(value ?? '');
 }
@@ -77,6 +74,32 @@ export function matchesColumnFilter(reg: Registration, key: string, filter?: Col
   const regValue = normalizeFilterOptionValue(getRegistrationFieldValue(reg, key));
   return selectedValues.some(selected =>
     regValue === normalizeFilterOptionValue(selected)
+  );
+}
+
+export function matchesCustomColumnFilter(
+  registrationId: string,
+  columnId: string,
+  filter: ColumnFilterValue | undefined,
+  customColumnValues: Map<string, Record<string, string | null>>,
+): boolean {
+  const { selectedValues } = normalizeColumnFilter(filter);
+  if (selectedValues.length === 0) return true;
+
+  const rawValue = customColumnValues.get(registrationId)?.[columnId] ?? '';
+  const regValue = normalizeFilterOptionValue(rawValue);
+  return selectedValues.some(selected =>
+    regValue === normalizeFilterOptionValue(selected)
+  );
+}
+
+export function getUniqueCustomColumnValues(
+  registrations: Registration[],
+  columnId: string,
+  customColumnValues: Map<string, Record<string, string | null>>,
+): string[] {
+  return dedupeFilterOptions(
+    registrations.map(reg => customColumnValues.get(reg.id)?.[columnId] ?? '')
   );
 }
 

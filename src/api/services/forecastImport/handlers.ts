@@ -190,6 +190,7 @@ export async function handleForecastConfirm(req: Request, res: Response) {
           {
             hasPriceColumns: cache.versionedHasPriceColumns ?? true,
             hasAmountColumns: cache.versionedHasAmountColumns ?? true,
+            spreadByRegistrationId: cache.spreadByRegistrationId,
           }
         );
         deletePreviewCache(body.previewId);
@@ -220,6 +221,7 @@ export async function handleForecastConfirm(req: Request, res: Response) {
           {
             hasPriceColumns: cache.legacyHasPriceColumns ?? false,
             hasAmountColumns: cache.legacyHasAmountColumns ?? false,
+            spreadByRegistrationId: cache.spreadByRegistrationId,
           }
         );
         deletePreviewCache(body.previewId);

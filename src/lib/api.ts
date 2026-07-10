@@ -1,6 +1,9 @@
 import type {
   ActualValue,
   CPLPrice,
+  CustomColumnDef,
+  CustomColumnType,
+  CustomColumnValue,
   ForecastSummary,
   ForecastSummaryRequest,
   ForecastValue,
@@ -285,8 +288,8 @@ export function isVersionedImportPreview(
   return 'expectedColumns' in preview && Array.isArray(preview.expectedColumns) && 'previewId' in preview;
 }
 
-export const LEGACY_FORECAST_IMPORT_CONTRACT_VERSION = 12;
-export const VERSIONED_FORECAST_IMPORT_CONTRACT_VERSION = 4;
+export const LEGACY_FORECAST_IMPORT_CONTRACT_VERSION = 13;
+export const VERSIONED_FORECAST_IMPORT_CONTRACT_VERSION = 6;
 
 export interface OverplanConfig {
   id: string;
@@ -668,7 +671,7 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify(registration),
       }),
-    updateSpread: (registrationId: string, spread: number, updatedBy?: string): Promise<{ registrationId: string; spread: number }> =>
+    updateSpread: (registrationId: string, spread: string | null, updatedBy?: string): Promise<{ registrationId: string; spread: string | null }> =>
       request(`/api/registrations/${encodeURIComponent(registrationId)}/spread`, {
         method: 'PATCH',
         body: JSON.stringify({ spread, updatedBy }),
@@ -790,6 +793,15 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(params),
         signal,
+      }),
+
+    copyVersion: (
+      sourceVersion: string,
+      targetVersion: string
+    ): Promise<{ ok: boolean; copied: number; sourceVersion: string; targetVersion: string }> =>
+      request('/api/forecast/copy-version', {
+        method: 'POST',
+        body: JSON.stringify({ sourceVersion, targetVersion }),
       }),
   },
 
@@ -1146,5 +1158,55 @@ export const api = {
       }),
     removeRole: (empCode: string): Promise<{ assignments: AppRoleAssignment[] }> =>
       request(`/api/admin/roles/${encodeURIComponent(empCode)}`, { method: 'DELETE' }),
+  },
+
+  customColumns: {
+    list: (): Promise<CustomColumnDef[]> =>
+      request('/api/custom-columns'),
+    create: (payload: {
+      name: string;
+      type: CustomColumnType;
+      dropdownOptions?: string[];
+      defaultValue?: string;
+    }): Promise<CustomColumnDef> =>
+      request('/api/custom-columns', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    update: (
+      id: string,
+      payload: Partial<{
+        name: string;
+        type: CustomColumnType;
+        dropdownOptions: string[];
+        defaultValue: string | null;
+      }>,
+    ): Promise<CustomColumnDef> =>
+      request(`/api/custom-columns/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }),
+    remove: (id: string): Promise<{ ok: boolean }> =>
+      request(`/api/custom-columns/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    queryValues: (
+      registrationIds: string[],
+      columnIds?: string[],
+    ): Promise<CustomColumnValue[]> =>
+      request('/api/custom-columns/values/query', {
+        method: 'POST',
+        body: JSON.stringify({ registrationIds, columnIds }),
+      }),
+    upsertValue: (
+      columnId: string,
+      registrationId: string,
+      value: string | null,
+    ): Promise<CustomColumnValue> =>
+      request(
+        `/api/custom-columns/${encodeURIComponent(columnId)}/values/${encodeURIComponent(registrationId)}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ value }),
+        },
+      ),
   },
 };

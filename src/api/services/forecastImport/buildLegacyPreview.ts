@@ -22,6 +22,7 @@ import {
   buildLegacyAutoCreatePackage,
   collectAutoCreateCandidates,
 } from './autoCreateRegistrations';
+import { buildSpreadByRegistrationId } from './importSpread';
 import type { ConfirmLegacyImportRecord, LegacyNormalizedImportRecord, UnifiedPreviewRow } from './types';
 import { storePreviewCache } from './previewCache';
 
@@ -111,6 +112,7 @@ export async function buildLegacyImportPreview(workbook: XLSX.WorkBook): Promise
     findRegistrationMatches([...excelGroups.keys()]),
     findActualSummaries([...excelGroups.keys()], forecastColumns),
   ]);
+  const spreadByRegistrationId = buildSpreadByRegistrationId(excelGroups, registrationMatches);
 
   const unmatchedRows: Awaited<ReturnType<typeof diagnoseUnmatchedRows>> = [];
   const duplicateRegistrationMatches: Array<{
@@ -245,6 +247,7 @@ export async function buildLegacyImportPreview(workbook: XLSX.WorkBook): Promise
     legacyHasAmountColumns: hasAmountColumns,
     amountMismatchCount: 0,
     autoCreateCandidates,
+    spreadByRegistrationId,
   });
 
   const unifiedPreviewRows: UnifiedPreviewRow[] = [];

@@ -1,6 +1,19 @@
 import * as XLSX from 'xlsx';
 import { KEY_HEADER, MONTH_INDEX_BY_ABBREVIATION } from './constants';
-import type { ForecastImportColumn } from './types';
+import type { ExcelForecastGroup, ForecastImportColumn } from './types';
+
+/**
+ * After duplicate Excel keys are aggregated, price must be amount/qty
+ * (not sum of unit prices). Single-row groups keep Excel price as-is.
+ */
+export function recomputeAggregatedPrices(group: ExcelForecastGroup) {
+  if (group.sourceSheetRows.length <= 1) return;
+  for (let index = 0; index < group.forecastValues.length; index += 1) {
+    const qty = group.forecastValues[index];
+    const amount = group.amountValues[index];
+    group.priceValues[index] = qty > 0 ? amount / qty : 0;
+  }
+}
 
 export function unknownToDisplayString(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -106,6 +119,41 @@ export function nullableText(value: unknown) {
 
 export function firstValue(current: string | null, value: unknown) {
   return current ?? nullableText(value);
+}
+
+export function findSpreadColumnIndex(header: unknown[]) {
+  const normalized = header.map(value => normalizeHeader(value));
+  const exactCustomer5 = normalized.findIndex(
+    value => value.toLowerCase() === 'spread to customer5',
+  );
+  if (exactCustomer5 >= 0) return exactCustomer5;
+
+  const customerSpread = normalized.findIndex(value => {
+    const lower = value.toLowerCase();
+    return lower === 'spread to customer' || lower.startsWith('spread to customer');
+  });
+  if (customerSpread >= 0) return customerSpread;
+
+  return normalized.findIndex(value => /^spread/i.test(value));
+}
+
+export function parseSpreadCell(value: unknown) {
+  if (value === null || value === undefined) {
+    return { ok: true as const, value: null as string | null };
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return { ok: false as const };
+    return { ok: true as const, value: String(value) };
+  }
+  const text = unknownToDisplayString(value).trim();
+  if (text === '') return { ok: true as const, value: null as string | null };
+  return { ok: true as const, value: text };
+}
+
+export function firstSpreadValue(current: string | null, value: unknown) {
+  if (current !== null) return current;
+  const parsed = parseSpreadCell(value);
+  return parsed.ok ? parsed.value : current;
 }
 
 export function findHeaderIndex(header: unknown[], aliases: string[]) {
