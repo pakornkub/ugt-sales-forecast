@@ -17,6 +17,7 @@ import {
   normalizeKey,
 } from './excelUtils';
 import { upsertRegistrationSpread } from '../registrationPricing';
+import { getActiveSnapshotVersion } from '../dataSnapshot';
 import { findRegistrationMatches } from './matching';
 import { normalizeStampPeriod } from './stampPeriod';
 import type {
@@ -233,23 +234,63 @@ function parseVersionedRecords(
   return parsed;
 }
 
+async function registrationStillExists(registrationId: string) {
+  const id = registrationId.trim();
+  if (!id) return false;
+  const managed = await prisma.masterDataCrmRegistration.findFirst({
+    where: { OR: [{ id }, { newKey: id }] },
+    select: { id: true },
+  });
+  if (managed) return true;
+  const snapshotVersion = await getActiveSnapshotVersion();
+  if (snapshotVersion) {
+    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT TOP (1) r.registrationId AS id
+      FROM dbo.crm_registration_snapshot r
+      WHERE r.snapshotVersion = ${snapshotVersion}
+        AND (r.registrationId = ${id} OR r.newKey = ${id})
+    `;
+    return rows.length > 0;
+  }
+  const crm = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT TOP (1) CAST(ISNULL(r.NewKey, r.KeyforNoCRM) AS NVARCHAR(200)) AS id
+    FROM dbo.VW_CRM_RegistrationAll_1 r
+    WHERE r.MainRegist = 1
+      AND (CAST(r.NewKey AS NVARCHAR(200)) = ${id} OR CAST(r.KeyforNoCRM AS NVARCHAR(500)) = ${id})
+  `;
+  return crm.length > 0;
+}
+
 async function assertRegistrationMatchesUnchanged(
   records: Array<{ excelKeyForNoRegist: string; matchedRegistrationId: string }>
 ) {
+  const uniqueRecords = [
+    ...new Map(
+      records.map(record => [
+        `${record.excelKeyForNoRegist}|${record.matchedRegistrationId}`,
+        record,
+      ])
+    ).values(),
+  ];
   const registrationMatches = await findRegistrationMatches([
-    ...new Set(records.map(record => record.excelKeyForNoRegist)),
+    ...new Set(uniqueRecords.map(record => record.excelKeyForNoRegist)),
   ]);
 
-  for (const record of records) {
+  for (const record of uniqueRecords) {
     const matches = registrationMatches.get(record.excelKeyForNoRegist) ?? [];
-    // Preview uses matches[0] even when duplicates exist; confirm must stay consistent.
-    if (matches.length === 0 || matches[0].registrationId !== record.matchedRegistrationId) {
-      throw new ForecastImportConfirmError(
-        409,
-        `Registration matching changed for ${record.excelKeyForNoRegist}. Run Preview again.`,
-        'REGISTRATION_MATCH_CHANGED'
-      );
+    if (matches.some(match => match.registrationId === record.matchedRegistrationId)) {
+      continue;
     }
+    // Auto-created rows may normalize plant (e.g. UBJ → 0), so Excel key no longer
+    // exact-matches CRM/managed lookup — accept if the destination registration still exists.
+    if (matches.length === 0 && await registrationStillExists(record.matchedRegistrationId)) {
+      continue;
+    }
+    throw new ForecastImportConfirmError(
+      409,
+      `Registration matching changed for ${record.excelKeyForNoRegist}. Run Preview again.`,
+      'REGISTRATION_MATCH_CHANGED'
+    );
   }
 }
 

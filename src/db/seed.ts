@@ -1,5 +1,5 @@
 /**
- * Seed script: insert initial forecast versions and CPL prices.
+ * Seed script: insert initial forecast versions and Price Management CPL rows.
  * Run with: npx tsx src/db/seed.ts
  * Reads DATABASE_URL from .env automatically.
  */
@@ -48,8 +48,18 @@ async function seed() {
       update: {},
       create: c,
     });
+    await prisma.$executeRaw`
+      MERGE [dbo].[price_management_values] AS target
+      USING (SELECT ${c.month} AS [month], N'Fcst' AS [priceType], N'Current Forecast' AS [versionName]) AS source
+      ON target.[month] = source.[month]
+        AND target.[priceType] = source.[priceType]
+        AND target.[versionName] = source.[versionName]
+      WHEN NOT MATCHED THEN
+        INSERT ([month], [priceType], [versionName], [cplPrice], [naphthaPrice], [benzenePrice])
+        VALUES (${c.month}, N'Fcst', N'Current Forecast', ${c.price}, 0, 0);
+    `;
   }
-  console.log(`[seed] Upserted ${INITIAL_CPL_PRICES.length} CPL prices`);
+  console.log(`[seed] Upserted ${INITIAL_CPL_PRICES.length} CPL / Price Management rows`);
 
   await prisma.overplanConfig.upsert({
     where: { id: 'default' },

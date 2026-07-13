@@ -60,6 +60,9 @@ export const REG_COLUMN_KEYS = [
   'endUserExportControl',
   'endUserName',
   'productName',
+  'productNamePud',
+  'gradeUfa',
+  'gradeSap',
   'column1',
   'priceFormula',
   'spread',
@@ -119,6 +122,9 @@ export interface Registration {
   endUserExportControl: string;
   endUserName: string;
   productName: string;
+  productNamePud: string;
+  gradeUfa: string;
+  gradeSap: string;
   column1: string;
   carryInETD: number;
   carryOutETD: number;

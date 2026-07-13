@@ -1,9 +1,9 @@
 import * as XLSX from 'xlsx';
 import {
   KEY_HEADER,
-  LEGACY_PREFERRED_SHEET_NAMES,
   SKIP_SHEET_NAMES,
 } from './constants';
+import { getPreferredLegacySheetNames } from '../../../config/appMode';
 import {
   buildExtendedForecastColumns,
   findHeaderIndex,
@@ -55,6 +55,11 @@ function mergeExcelGroups(existing: ExcelForecastGroup, incoming: ExcelForecastG
   existing.subApplication = existing.subApplication ?? incoming.subApplication;
   existing.owner = existing.owner ?? incoming.owner;
   existing.businessUnit = existing.businessUnit ?? incoming.businessUnit;
+  existing.productName = existing.productName ?? incoming.productName;
+  existing.gradeUfa = existing.gradeUfa ?? incoming.gradeUfa;
+  existing.gradeSap = existing.gradeSap ?? incoming.gradeSap;
+  existing.materialDescription = existing.materialDescription ?? incoming.materialDescription;
+  existing.registrationTopic = existing.registrationTopic ?? incoming.registrationTopic;
   existing.spread = existing.spread ?? incoming.spread;
 }
 
@@ -104,7 +109,7 @@ export function resolveLegacyImportSheets(workbook: XLSX.WorkBook) {
   const matched: Array<{ sheetName: string; sheet: XLSX.WorkSheet }> = [];
   const seen = new Set<string>();
 
-  for (const name of LEGACY_PREFERRED_SHEET_NAMES) {
+  for (const name of getPreferredLegacySheetNames()) {
     const sheet = workbook.Sheets[name];
     if (sheet && sheetHasLegacyImportLayout(sheet) && !seen.has(name)) {
       matched.push({ sheetName: name, sheet });
@@ -227,6 +232,11 @@ export function parseLegacyImportSheet(sheetName: string, sheet: XLSX.WorkSheet)
       subApplication: null,
       owner: null,
       businessUnit: null,
+      productName: null,
+      gradeUfa: null,
+      gradeSap: null,
+      materialDescription: null,
+      registrationTopic: null,
       forecastValues: extendedColumns.map(() => 0),
       priceValues: extendedColumns.map(() => 0),
       amountValues: extendedColumns.map(() => 0),

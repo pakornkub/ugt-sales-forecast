@@ -7,6 +7,11 @@ import { resolveManagedRegistrationUpdate } from '../services/registrationResolv
 import { upsertRegistrationSpread } from '../services/registrationPricing';
 import { businessUnitFromPlantCode, crmBusinessUnitSelectSql } from '../services/businessUnit';
 import { getActiveSnapshotVersion } from '../services/dataSnapshot';
+import {
+  buildAppModeRegistrationScopeSql,
+  clampBusinessUnitFilterValues,
+  isRegistrationInAppMode,
+} from '../../config/appMode';
 
 const router = Router();
 const DEFAULT_PAGE_SIZE = 80;
@@ -42,7 +47,9 @@ const managedRegistrationSourceSql = Prisma.sql`
     r.application AS Application, r.subApp AS SubApp, r.zoneName AS ZoneName,
     r.plantName AS PlantName, r.countryCode AS CountryCode, r.endUserCode AS EndUserCode,
     r.endUserExportControl AS EndUserExportControl, r.endUserName AS EndUserName,
-    r.productName AS ProductName, r.priceFormula AS PriceFormula,
+    r.productName AS ProductName,
+    r.productNamePud AS ProductNamePud, r.gradeUfa AS GradeUfa, r.gradeSap AS GradeSap,
+    r.priceFormula AS PriceFormula,
     COALESCE(NULLIF(LTRIM(RTRIM(rps.spread)), ''), NULLIF(LTRIM(RTRIM(r.spread)), '')) AS Spread,
     r.businessUnit AS BusinessUnit, r.createdBy AS CreatedBy,
     CAST(1 AS BIT) AS IsManaged
@@ -77,7 +84,11 @@ export async function getRegistrationSourceSql() {
         r.subApp AS SubApp, r.zoneName AS ZoneName, r.plantName AS PlantName,
         r.countryCode AS CountryCode, r.endUserCode AS EndUserCode,
         r.endUserExportControl AS EndUserExportControl, r.endUserName AS EndUserName,
-        r.productName AS ProductName, CAST('' AS NVARCHAR(50)) AS PriceFormula,
+        r.productName AS ProductName,
+        CAST(NULL AS NVARCHAR(500)) AS ProductNamePud,
+        CAST(NULL AS NVARCHAR(500)) AS GradeUfa,
+        CAST(NULL AS NVARCHAR(500)) AS GradeSap,
+        CAST('' AS NVARCHAR(50)) AS PriceFormula,
         NULLIF(LTRIM(RTRIM(rps.spread)), '') AS Spread, r.businessUnit AS BusinessUnit,
         CAST('' AS NVARCHAR(100)) AS CreatedBy,
         CAST(0 AS BIT) AS IsManaged
@@ -110,6 +121,9 @@ export async function getRegistrationSourceSql() {
     ISNULL(r.Cat3Name, '') AS SubApp,
     r.ZoneName, r.PlantName, r.CountryCode, r.EndUserCode,
     r.EndUserExportControl, r.EndUserName, r.ProductName,
+    CAST(NULL AS NVARCHAR(500)) AS ProductNamePud,
+    CAST(NULL AS NVARCHAR(500)) AS GradeUfa,
+    CAST(NULL AS NVARCHAR(500)) AS GradeSap,
     CAST('' AS NVARCHAR(50)) AS PriceFormula,
     NULLIF(LTRIM(RTRIM(rps.spread)), '') AS Spread,
     ${directCrmBusinessUnitSql},
@@ -170,6 +184,9 @@ const filterColumns: Record<string, Prisma.Sql> = {
   endUserExportControl: Prisma.sql`r.EndUserExportControl`,
   endUserName: Prisma.sql`r.EndUserName`,
   productName: Prisma.sql`r.ProductName`,
+  productNamePud: Prisma.sql`r.ProductNamePud`,
+  gradeUfa: Prisma.sql`r.GradeUfa`,
+  gradeSap: Prisma.sql`r.GradeSap`,
   column1: Prisma.sql`r.NewKey`,
 };
 
@@ -199,7 +216,7 @@ const optionalTextFields = [
   'agreedSpecType', 'wasteScrap', 'forResaleNotApprove', 'imdsDate', 'model',
   'approve', 'partName', 'coaName', 'process', 'application', 'subApp',
   'zoneName', 'plantName', 'countryCode', 'endUserExportControl',
-  'endUserName', 'productName',
+  'endUserName', 'productName', 'productNamePud', 'gradeUfa', 'gradeSap',
 ] as const;
 
 const optionalBodyKeys: Record<(typeof optionalTextFields)[number], string> = {
@@ -234,6 +251,9 @@ const optionalBodyKeys: Record<(typeof optionalTextFields)[number], string> = {
   endUserExportControl: 'endUserExportControl',
   endUserName: 'endUserName',
   productName: 'productName',
+  productNamePud: 'productNamePud',
+  gradeUfa: 'gradeUfa',
+  gradeSap: 'gradeSap',
 };
 
 function text(value: unknown) {
@@ -286,7 +306,8 @@ export function buildRegistrationFilterSql(filters: RegistrationFilters, exclude
     .map(([key, values]) => Prisma.sql`
       AND CONVERT(NVARCHAR(4000), ${filterColumns[key]}) IN (${Prisma.join(values)})
     `);
-  return clauses.length > 0 ? Prisma.join(clauses, ' ') : Prisma.empty;
+  const filterClauses = clauses.length > 0 ? Prisma.join(clauses, ' ') : Prisma.empty;
+  return Prisma.sql`${filterClauses} ${buildAppModeRegistrationScopeSql('r')}`;
 }
 
 export function normalizeRegistrationFilters(value: unknown): RegistrationFilters {
@@ -294,10 +315,16 @@ export function normalizeRegistrationFilters(value: unknown): RegistrationFilter
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
       .filter(([key, values]) => filterColumns[key] && Array.isArray(values))
-      .map(([key, values]) => [
-        key,
-        (values as unknown[]).map(item => scalarToString(item)).filter(Boolean).slice(0, 200),
-      ])
+      .map(([key, values]) => {
+        const normalized = (values as unknown[])
+          .map(item => scalarToString(item))
+          .filter(Boolean)
+          .slice(0, 200);
+        if (key === 'businessUnit') {
+          return [key, clampBusinessUnitFilterValues(normalized)];
+        }
+        return [key, normalized];
+      })
       .filter(([, values]) => values.length > 0)
   );
 }
@@ -402,6 +429,9 @@ function mapRegistrationRow(row: Record<string, unknown>) {
     endUserExportControl: String(row.EndUserExportControl ?? row.endUserExportControl ?? ''),
     endUserName: String(row.EndUserName ?? row.endUserName ?? ''),
     productName: String(row.ProductName ?? row.productName ?? ''),
+    productNamePud: String(row.ProductNamePud ?? row.productNamePud ?? ''),
+    gradeUfa: String(row.GradeUfa ?? row.gradeUfa ?? ''),
+    gradeSap: String(row.GradeSap ?? row.gradeSap ?? ''),
     column1: String(row.NewKey ?? row.newKey ?? ''),
     createdBy: scalarToString(row.CreatedBy ?? row.createdBy),
     isIncomplete: isIncompleteManagedRegistration({
@@ -526,7 +556,11 @@ router.get('/managed', async (_req, res) => {
     const rows = await prisma.masterDataCrmRegistration.findMany({
       orderBy: { createdAt: 'desc' },
     });
-    res.json(rows.map(row => mapRegistrationRow({ ...row, isManaged: true })));
+    res.json(
+      rows
+        .filter(row => isRegistrationInAppMode(row.businessUnit, row.plantCode))
+        .map(row => mapRegistrationRow({ ...row, isManaged: true }))
+    );
   } catch (error) {
     console.error('[registrations] managed GET error:', error);
     res.status(500).json({ error: 'Failed to fetch new registrations' });
@@ -618,6 +652,13 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   const parsed = createData(req.body ?? {});
   if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+
+  if (!isRegistrationInAppMode(parsed.data.businessUnit, parsed.data.plantCode)) {
+    return res.status(400).json({
+      error: 'Registration business unit is not allowed in this application mode',
+      code: 'BUSINESS_UNIT_NOT_ALLOWED',
+    });
+  }
 
   try {
     const duplicate = await findDuplicate(parsed.data.newKey, parsed.data.keyForNoCRM);

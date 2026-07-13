@@ -183,7 +183,7 @@ export interface CurrentForecastImportPreview {
     sourceRows: number[];
     sourceSheet?: string;
     reason: string;
-    reasonCode: 'invalid_forecast_number';
+    reasonCode: 'invalid_forecast_number' | 'excluded_plant';
   }>;
   existingDbConflicts: Array<{
     sourceRow: number;
@@ -289,7 +289,7 @@ export function isVersionedImportPreview(
 }
 
 export const LEGACY_FORECAST_IMPORT_CONTRACT_VERSION = 13;
-export const VERSIONED_FORECAST_IMPORT_CONTRACT_VERSION = 6;
+export const VERSIONED_FORECAST_IMPORT_CONTRACT_VERSION = 7;
 
 export interface OverplanConfig {
   id: string;
@@ -405,6 +405,13 @@ export interface OverplanEvaluateRequest {
   pageSize?: number;
   filters?: Record<string, string[]>;
 }
+
+export type AppConfig = {
+  appMode: 'nyl' | 'ufa';
+  allowedBusinessUnits: string[];
+  displayName: string;
+  basePath: string;
+};
 
 export class ApiError extends Error {
   constructor(
@@ -614,6 +621,10 @@ async function runForecastListProgressive(
 // ── Registrations ────────────────────────────────────────────────────────────
 
 export const api = {
+  appConfig: {
+    get: (): Promise<AppConfig> => request('/api/app-config'),
+  },
+
   auth: {
     me: async (): Promise<AuthMeResponse> => {
       const res = await fetch(withAppBase('/auth/me'));

@@ -41,7 +41,7 @@ class AuthHttpError extends Error {
   }
 }
 
-export function normalizeBasePath(value = process.env.APP_BASE_PATH ?? '/sales-forecast') {
+export function normalizeBasePath(value = process.env.APP_BASE_PATH ?? '/nylon') {
   const trimmed = value.trim();
   if (!trimmed || trimmed === '/') return '';
   return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`;
@@ -49,7 +49,7 @@ export function normalizeBasePath(value = process.env.APP_BASE_PATH ?? '/sales-f
 
 export function getAppPath() {
   const basePath = normalizeBasePath();
-  return basePath ? `${basePath}/` : '/';
+  return basePath || '/';
 }
 
 function isDevAuthBypass() {

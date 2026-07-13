@@ -51,7 +51,7 @@ import {
 import { buildForecastIndex, getForecastCellValue, getForecastStoragePeriod, monthKey, resolveRegistrationPriceFormula } from './components/forecast/forecastCellUtils';
 import { resolveForecastListGranularity } from './lib/forecastPeriod';
 import { filterRegistrations, matchesCustomColumnFilter } from './components/forecast/forecastFilterUtils';
-import { api, ApiError, FORECAST_BACKGROUND_CHUNK_SIZE, FORECAST_PRIORITY_REGISTRATION_COUNT, REGISTRATION_PAGE_SIZE, formatApiError, type AuthUser, type SessionPermissions, type SnapshotStatus } from './lib/api';
+import { api, ApiError, FORECAST_BACKGROUND_CHUNK_SIZE, FORECAST_PRIORITY_REGISTRATION_COUNT, REGISTRATION_PAGE_SIZE, formatApiError, type AppConfig, type AuthUser, type SessionPermissions, type SnapshotStatus } from './lib/api';
 import { effectivePermissions } from './lib/permissions';
 import {
   EMPTY_COLUMN_FILTER,
@@ -100,10 +100,29 @@ const Bar = lazyRechart('Bar');
 type AppTab = 'forecast' | 'master' | 'dashboard' | 'overplan' | 'weekly' | 'monthly' | 'yearly' | 'mtp' | 'pdc' | 'suggestion';
 const FORECAST_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
 const FORECAST_SUMMARY_CACHE_PREFIX = 'forecast-summary:v1:';
-const BU_FILTER_STORAGE_KEY = 'sales-forecast:business-unit-filter:v1';
+const BU_FILTER_STORAGE_KEY_PREFIX = 'sales-forecast:business-unit-filter:v1';
 const STAMP_PERIOD_OPTIONS = ['No', 'Weekly1', 'Weekly2', 'Weekly3', 'Weekly4', 'Weekly5', 'Monthly1', 'Monthly2'];
 const CURRENT_FORECAST_VERSION = 'Current Forecast';
 const GLOBAL_PRICE_VERSION = 'GLOBAL';
+
+function businessUnitStorageKey(appMode?: string) {
+  return appMode ? `${BU_FILTER_STORAGE_KEY_PREFIX}:${appMode}` : BU_FILTER_STORAGE_KEY_PREFIX;
+}
+
+function loadStoredBusinessUnitFilter(appMode?: string): ColumnFiltersState {
+  if (globalThis.localStorage === undefined) return {};
+  try {
+    const raw = globalThis.localStorage.getItem(businessUnitStorageKey(appMode))
+      ?? (!appMode ? null : globalThis.localStorage.getItem(BU_FILTER_STORAGE_KEY_PREFIX));
+    if (!raw) return {};
+    const selectedValues = JSON.parse(raw);
+    if (!Array.isArray(selectedValues)) return {};
+    const values = selectedValues.map(value => String(value).trim()).filter(Boolean);
+    return values.length > 0 ? { businessUnit: { searchText: '', selectedValues: values } } : {};
+  } catch {
+    return {};
+  }
+}
 
 function buildScopedForecastQuery(
   registrationIds: string[],
@@ -408,20 +427,6 @@ async function loadForecastPriceData(
   }
 }
 
-function loadStoredBusinessUnitFilter(): ColumnFiltersState {
-  if (globalThis.localStorage === undefined) return {};
-  try {
-    const raw = globalThis.localStorage.getItem(BU_FILTER_STORAGE_KEY);
-    if (!raw) return {};
-    const selectedValues = JSON.parse(raw);
-    if (!Array.isArray(selectedValues)) return {};
-    const values = selectedValues.map(value => String(value).trim()).filter(Boolean);
-    return values.length > 0 ? { businessUnit: { searchText: '', selectedValues: values } } : {};
-  } catch {
-    return {};
-  }
-}
-
 // --- Components ---
 
 const MONTH_OPTIONS = [
@@ -540,6 +545,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('forecast');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [permissions, setPermissions] = useState<SessionPermissions | null>(null);
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [openNavMenu, setOpenNavMenu] = useState<'manage' | 'budget' | null>(null);
@@ -1046,17 +1052,49 @@ export default function App() {
     serverRegistrationFiltersRef.current = serverRegistrationFilters;
   }, [serverRegistrationFilters]);
   useEffect(() => {
+    let cancelled = false;
+    api.appConfig.get()
+      .then(config => {
+        if (cancelled) return;
+        setAppConfig(config);
+        document.title = config.displayName;
+        const allowed = new Set(config.allowedBusinessUnits.map(value => value.toLowerCase()));
+        setColumnFilters(prev => {
+          const stored = loadStoredBusinessUnitFilter(config.appMode);
+          const selectedValues = (stored.businessUnit?.selectedValues?.length
+            ? stored.businessUnit.selectedValues
+            : prev.businessUnit?.selectedValues ?? []
+          ).filter(value => allowed.has(value.toLowerCase()));
+          if (selectedValues.length === 0) {
+            if (!prev.businessUnit) return prev;
+            const { businessUnit: _removed, ...rest } = prev;
+            return rest;
+          }
+          return {
+            ...prev,
+            businessUnit: { searchText: '', selectedValues },
+          };
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     try {
       const selectedValues = columnFilters.businessUnit?.selectedValues ?? [];
+      const key = businessUnitStorageKey(appConfig?.appMode);
       if (selectedValues.length > 0) {
-        globalThis.localStorage.setItem(BU_FILTER_STORAGE_KEY, JSON.stringify(selectedValues));
+        globalThis.localStorage.setItem(key, JSON.stringify(selectedValues));
       } else {
-        globalThis.localStorage.removeItem(BU_FILTER_STORAGE_KEY);
+        globalThis.localStorage.removeItem(key);
       }
     } catch {
       // Local storage is optional; filters still work without persistence.
     }
-  }, [columnFilters.businessUnit?.selectedValues]);
+  }, [columnFilters.businessUnit?.selectedValues, appConfig?.appMode]);
   const loadFilterOptions = useCallback(
     (columnKey: string, search: string, cursor?: string | null) =>
       api.registrations.filterOptions(
@@ -1747,6 +1785,7 @@ export default function App() {
         setCplPrices(cpls);
         setNaphthaprices(cpls.map(c => ({ month: c.month, price: 0 })));
         setBenzeneprices(cpls.map(c => ({ month: c.month, price: 0 })));
+        setPriceManagementRows(mapLegacyCplPrices(cpls));
         setIsLoading(false);
         loadDone();
 
@@ -2697,6 +2736,9 @@ export default function App() {
         endUserExportControl: '',
         endUserName: '',
         productName: '',
+        productNamePud: '',
+        gradeUfa: '',
+        gradeSap: '',
         column1: '',
         carryInETD: 0,
         carryOutETD: 0,
@@ -3390,6 +3432,11 @@ export default function App() {
               </svg>
             </div>
             <span className="text-white font-bold tracking-tight text-base uppercase whitespace-nowrap">SalesNexus</span>
+            {appConfig ? (
+              <span className="hidden text-[10px] font-semibold uppercase tracking-wider text-blue-100/90 sm:inline">
+                {appConfig.appMode === 'ufa' ? 'UFA' : 'Polymer / Composite'}
+              </span>
+            ) : null}
           </div>
           <div className="h-5 w-[1px] bg-white/25"></div>
           <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto overflow-y-visible py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -4154,6 +4201,7 @@ export default function App() {
                   onCustomColumnValueChange={handleCustomColumnValueChange}
                   onOpenCopyForecast={openCopyForecastModal}
                   canCopyForecast={versions.length >= 2}
+                  appMode={appConfig?.appMode ?? null}
                 />
 
                 <InventoryCommitPreviewModal

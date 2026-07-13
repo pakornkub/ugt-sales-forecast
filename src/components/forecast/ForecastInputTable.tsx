@@ -98,6 +98,7 @@ export interface ForecastInputTableProps {
   onCustomColumnValueChange?: (columnId: string, registrationId: string, value: string | null) => void;
   onOpenCopyForecast?: () => void;
   canCopyForecast?: boolean;
+  appMode?: 'nyl' | 'ufa' | null;
 }
 
 function ForecastInputTableComponent({
@@ -146,6 +147,7 @@ function ForecastInputTableComponent({
   onCustomColumnValueChange,
   onOpenCopyForecast,
   canCopyForecast = false,
+  appMode = null,
 }: ForecastInputTableProps) {
   const isScopeDataLoading = isTableDataLoading || Boolean(
     forecastLoadProgress?.active && forecastLoadProgress.version === selectedVersion,
@@ -163,7 +165,7 @@ function ForecastInputTableComponent({
     handlePanelReorder,
     columnVisibility,
     toggleColumnVisibility,
-  } = useRegTableLayout();
+  } = useRegTableLayout(appMode);
 
   const visibleOrderedColumns = orderedColumns.filter(c => {
     return columnVisibility ? columnVisibility[c.key] !== false : true;
@@ -452,6 +454,7 @@ function ForecastInputTableComponent({
         customColumns={customColumnDefs}
         customColumnVisibility={customColumnVisibility}
         onToggleCustomColumnVisibility={toggleCustomColumnVisibility}
+        appMode={appMode}
       />
 
       <DraftRegistrationPanel

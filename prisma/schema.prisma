@@ -77,7 +77,7 @@ model ForecastChangeLog {
   @@map("forecast_change_logs")
 }
 
-/// CPL (Cost Plus Landing) base prices by month
+/// @deprecated Legacy table — app uses price_management_values. Kept for DB compatibility only.
 model CplPrice {
   month     String  @id @db.NVarChar(7)  // "YYYY-MM"
   price     Decimal @default(0) @db.Decimal(18, 4)
@@ -160,6 +160,9 @@ model MasterDataCrmRegistration {
   endUserExportControl        String?  @db.NVarChar(500)
   endUserName                 String?  @db.NVarChar(500)
   productName                 String?  @db.NVarChar(500)
+  productNamePud              String?  @db.NVarChar(500)
+  gradeUfa                    String?  @db.NVarChar(500)
+  gradeSap                    String?  @db.NVarChar(500)
   priceFormula                String   @default("CPL") @db.NVarChar(50)
   spread                      String?  @db.NVarChar(1000)
   createdBy                   String   @default("sales-forecast-web") @db.NVarChar(100)

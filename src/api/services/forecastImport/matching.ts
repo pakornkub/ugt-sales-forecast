@@ -17,6 +17,14 @@ import {
 } from './keyDiagnostics';
 import type { ActualSummary, ForecastImportColumn, RegistrationMatch, UnmatchedRowDiagnostic } from './types';
 
+/** Plant segment values that must never be imported (invalid / non-plant labels). */
+const EXCLUDED_IMPORT_PLANT_SEGMENTS = new Set(['UBJ', '1111']);
+
+export function isExcludedImportPlantKey(excelKey: string) {
+  const plant = parseExcelKey(excelKey).plant.trim().toUpperCase();
+  return EXCLUDED_IMPORT_PLANT_SEGMENTS.has(plant);
+}
+
 export {
   parseExcelKey,
   flipOnOffKey,

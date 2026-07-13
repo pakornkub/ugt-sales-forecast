@@ -22,6 +22,7 @@ import { ensureCustomerMasterCache } from './api/services/customerMaster';
 import { ensureCplActualPrices } from './api/services/cplActualSync';
 import { ensureRoleDefaults } from './api/services/appRoles';
 import { createAuthRouter, getAppPath, normalizeBasePath, requireAuth } from './api/auth';
+import { getAppConfigPublic } from './config/appMode';
 
 const app = express();
 const PORT = process.env.API_PORT || 3001;
@@ -34,6 +35,7 @@ const apiRouter = express.Router();
 
 app.get(`${basePath}/healthz`, (_req, res) => res.json({ ok: true }));
 apiRouter.get('/health', (_req, res) => res.json({ ok: true }));
+apiRouter.get('/app-config', (_req, res) => res.json(getAppConfigPublic()));
 apiRouter.use('/registrations', registrationsRouter);
 apiRouter.use('/forecast', forecastRouter);
 apiRouter.use('/cpl-prices', cplRouter);
@@ -51,24 +53,27 @@ apiRouter.use('/custom-columns', customColumnsRouter);
 apiRouter.use('/employees', createEmployeeRouter());
 
 app.use(`${basePath}/auth`, createAuthRouter());
+app.get(`${basePath}/api/app-config`, (_req, res) => res.json(getAppConfigPublic()));
 app.use(`${basePath}/api`, requireAuth, apiRouter);
 
 if (process.env.NODE_ENV !== 'production') {
   app.use('/auth', createAuthRouter());
+  app.get('/api/app-config', (_req, res) => res.json(getAppConfigPublic()));
   app.use('/api', requireAuth, apiRouter);
 }
 
 if (basePath) {
   app.use((req, res, next) => {
-    if (req.path !== basePath) return next();
+    // Prefer URL without trailing slash: /ugt-sales-forecast/nylon/ -> /ugt-sales-forecast/nylon
+    if (req.path !== `${basePath}/`) return next();
     const queryIndex = req.originalUrl.indexOf('?');
     const query = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : '';
-    return res.redirect(308, `${getAppPath()}${query}`);
+    return res.redirect(308, `${basePath}${query}`);
   });
 }
 app.use(basePath || '/', express.static(distPath));
 app.get('/', (_req, res) => res.redirect(getAppPath()));
-app.get(`${basePath}/*`, (_req, res) => {
+app.get([basePath, `${basePath}/*`], (_req, res) => {
   res.sendFile(path.join(distPath, 'index.html'));
 });
 

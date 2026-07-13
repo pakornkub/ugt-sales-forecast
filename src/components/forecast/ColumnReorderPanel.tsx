@@ -8,7 +8,7 @@ import type {
   CustomColumnDef,
   RegColumnKey,
 } from '../../types/forecast';
-import { ALL_REG_COLUMNS } from './regTableColumns';
+import { ALL_REG_COLUMNS, getRegColumnsForAppMode } from './regTableColumns';
 
 const CARRY_DETAIL_OPTIONS: Array<{ key: CarryDetailKey; label: string }> = [
   { key: 'carryIn', label: 'Carry In (TON)' },
@@ -32,6 +32,7 @@ export function ColumnReorderPanel({
   customColumns = [],
   customColumnVisibility,
   onToggleCustomColumnVisibility,
+  appMode,
 }: Readonly<{
   open: boolean;
   onClose: () => void;
@@ -45,13 +46,15 @@ export function ColumnReorderPanel({
   customColumns?: CustomColumnDef[];
   customColumnVisibility?: Record<string, boolean>;
   onToggleCustomColumnVisibility?: (columnId: string) => void;
+  appMode?: 'nyl' | 'ufa' | null;
 }>) {
   const [draggedKey, setDraggedKey] = useState<RegColumnKey | null>(null);
   const [dragOverKey, setDragOverKey] = useState<RegColumnKey | null>(null);
   const [columnSearch, setColumnSearch] = useState('');
 
+  const regColumns = getRegColumnsForAppMode(appMode);
   const orderedDefs = columnOrder
-    .map(key => ALL_REG_COLUMNS.find(c => c.key === key))
+    .map(key => regColumns.find(c => c.key === key) ?? ALL_REG_COLUMNS.find(c => c.key === key))
     .filter(Boolean) as typeof ALL_REG_COLUMNS;
   const filteredDefs = useMemo(() => {
     const query = columnSearch.trim().toLowerCase();

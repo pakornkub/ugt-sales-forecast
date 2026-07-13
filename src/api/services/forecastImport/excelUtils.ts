@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { KEY_HEADER, MONTH_INDEX_BY_ABBREVIATION } from './constants';
+import { KEY_HEADER_ALIASES, MONTH_INDEX_BY_ABBREVIATION } from './constants';
 import type { ExcelForecastGroup, ForecastImportColumn } from './types';
 
 /**
@@ -32,6 +32,30 @@ export function normalizeKey(value: unknown) {
   return unknownToDisplayString(value).trim();
 }
 
+/** UFA NewKey may be Topic/SoldTo/ShipTo/EndUser/Plant/Material/OnOff (7 parts). */
+export function toImportKeyForNoRegist(rawKey: string) {
+  const key = normalizeKey(rawKey);
+  const parts = key.split('/');
+  if (parts.length === 7 && /^(on|off)$/i.test(parts[6].trim())) {
+    return parts.slice(1).map(part => part.trim()).join('/');
+  }
+  return key;
+}
+
+export function registrationTopicFromImportKey(rawKey: string) {
+  const key = normalizeKey(rawKey);
+  const parts = key.split('/');
+  if (parts.length === 7 && /^(on|off)$/i.test(parts[6].trim())) {
+    return parts[0].trim() || null;
+  }
+  return null;
+}
+
+export function isImportKeyHeader(value: unknown) {
+  const header = normalizeHeader(value).toUpperCase();
+  return KEY_HEADER_ALIASES.some(alias => alias.toUpperCase() === header);
+}
+
 export const SYNTHETIC_IMPORT_KEY_PREFIX = '__IMPORT__';
 
 export function buildSyntheticImportKey(sheetName: string, sourceRow: number) {
@@ -62,13 +86,24 @@ export function firstDayOfMonthPeriod(month: string) {
   return `${month}-01`;
 }
 
+function parseMonthYearToken(header: string): { monthAbbr: string; year2: string } | null {
+  const normalized = header.trim().toUpperCase().replaceAll(/\s+/g, '');
+  const dash = /^([A-Z]{3})-(\d{2})$/.exec(normalized);
+  if (dash) return { monthAbbr: dash[1], year2: dash[2] };
+  const apostrophe = /^([A-Z]{3})'(\d{2})$/.exec(normalized);
+  if (apostrophe) return { monthAbbr: apostrophe[1], year2: apostrophe[2] };
+  return null;
+}
+
 export function parseForecastMonthColumn(value: unknown, index: number): ForecastImportColumn | null {
   const header = normalizeHeader(value).toUpperCase();
-  const match = /^([A-Z]{3})-(\d{2})$/.exec(header);
+  // Qty month headers only — skip price/amount suffixes.
+  if (/_(PRICE|AMT|AMOUNT)$/i.test(header)) return null;
+  const match = parseMonthYearToken(header);
   if (!match) return null;
-  const monthIndex = MONTH_INDEX_BY_ABBREVIATION[match[1]];
+  const monthIndex = MONTH_INDEX_BY_ABBREVIATION[match.monthAbbr];
   if (monthIndex === undefined) return null;
-  const year = 2000 + Number(match[2]);
+  const year = 2000 + Number(match.year2);
   const month = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
   return {
     col: XLSX.utils.encode_col(index),
@@ -81,14 +116,26 @@ export function parseForecastMonthColumn(value: unknown, index: number): Forecas
 
 export function parseMonthTokenFromPrefixedHeader(value: unknown): { month: string; header: string } | null {
   const raw = normalizeHeader(value).toUpperCase();
-  const match = /^[PA]_([A-Z]{3})-(\d{2})$/.exec(raw);
-  if (!match) return null;
-  const monthAbbr = match[1].toUpperCase();
-  const monthIndex = MONTH_INDEX_BY_ABBREVIATION[monthAbbr];
-  if (monthIndex === undefined) return null;
-  const year = 2000 + Number(match[2]);
-  const month = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
-  return { month, header: raw };
+  const prefixed = /^[PA]_([A-Z]{3})-(\d{2})$/.exec(raw);
+  if (prefixed) {
+    const monthAbbr = prefixed[1];
+    const monthIndex = MONTH_INDEX_BY_ABBREVIATION[monthAbbr];
+    if (monthIndex === undefined) return null;
+    const year = 2000 + Number(prefixed[2]);
+    const month = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+    return { month, header: raw };
+  }
+
+  const suffix = /^([A-Z]{3})[-'](\d{2})_(PRICE|AMT|AMOUNT)$/.exec(raw.replaceAll(/\s+/g, ''));
+  if (suffix) {
+    const monthAbbr = suffix[1];
+    const monthIndex = MONTH_INDEX_BY_ABBREVIATION[monthAbbr];
+    if (monthIndex === undefined) return null;
+    const year = 2000 + Number(suffix[2]);
+    const month = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+    return { month, header: raw };
+  }
+  return null;
 }
 
 export function isFirstWednesdayPeriod(period: string) {
@@ -161,7 +208,7 @@ export function findHeaderIndex(header: unknown[], aliases: string[]) {
   return header.findIndex(value => normalizedAliases.has(normalizeHeader(value).toUpperCase()));
 }
 
-export type ImportSheetLayout = 'polymer' | 'cp';
+export type ImportSheetLayout = 'polymer' | 'cp' | 'ufa';
 
 export interface ImportMetadataColumns {
   layout: ImportSheetLayout;
@@ -176,7 +223,30 @@ export interface ImportMetadataColumns {
   shipTo: number;
   enduser: number;
   owner: number;
+  productName: number;
+  gradeUfa: number;
+  gradeSap: number;
+  materialDescription: number;
+  registrationTopic: number;
+  plantName: number;
+  soldToCode: number;
+  shipToCode: number;
+  endUserCode: number;
+  pic: number;
 }
+
+const EMPTY_NAMED_METADATA = {
+  productName: -1,
+  gradeUfa: -1,
+  gradeSap: -1,
+  materialDescription: -1,
+  registrationTopic: -1,
+  plantName: -1,
+  soldToCode: -1,
+  shipToCode: -1,
+  endUserCode: -1,
+  pic: -1,
+} as const;
 
 const POLYMER_METADATA_COLUMNS: ImportMetadataColumns = {
   layout: 'polymer',
@@ -191,6 +261,7 @@ const POLYMER_METADATA_COLUMNS: ImportMetadataColumns = {
   shipTo: 26,
   enduser: 27,
   owner: 30,
+  ...EMPTY_NAMED_METADATA,
 };
 
 const CP_METADATA_COLUMNS: ImportMetadataColumns = {
@@ -206,9 +277,52 @@ const CP_METADATA_COLUMNS: ImportMetadataColumns = {
   shipTo: 25,
   enduser: 26,
   owner: 27,
+  ...EMPTY_NAMED_METADATA,
 };
 
+function isUfaImportHeader(header: unknown[]) {
+  return (
+    findHeaderIndex(header, [
+      'Product Name (PUD)',
+      'Product Name (PUD/PCD)',
+      'Grade(UFA)',
+      'Grade (UFA)',
+      'Grade(SAP)',
+      'Grade (SAP)',
+    ]) >= 0
+  );
+}
+
+function resolveUfaMetadataColumns(header: unknown[]): ImportMetadataColumns {
+  const idx = (aliases: string[]) => findHeaderIndex(header, aliases);
+  return {
+    layout: 'ufa',
+    materialCode: idx(['MaterialCode', 'Material Code']),
+    plantCode: idx(['PlantCode', 'Plant Code']),
+    country: idx(['CountryName', 'Country Name', 'Country']),
+    onOff: idx(['On/Off Spec', 'OnOff', 'On/Off']),
+    process: idx(['Process']),
+    application: idx(['Application']),
+    subApplication: idx(['Sub-App', 'SubApp', 'Sub App']),
+    soldTo: idx(['SoldTo_name', 'Sold To', 'SoldTo']),
+    shipTo: idx(['ShipTo_name', 'Ship To', 'ShipTo']),
+    enduser: idx(['End_user', 'End User', 'EndUser']),
+    owner: idx(['OwnerName', 'Owner Name']),
+    productName: idx(['Product Name (PUD)', 'Product Name (PUD/PCD)', 'Product Name']),
+    gradeUfa: idx(['Grade(UFA)', 'Grade (UFA)']),
+    gradeSap: idx(['Grade(SAP)', 'Grade (SAP)']),
+    materialDescription: idx(['MaterialDescription', 'Material Description']),
+    registrationTopic: idx(['RegistrationTopic', 'Registration Topic']),
+    plantName: idx(['PlantName', 'Plant Name']),
+    soldToCode: idx(['SoldToCode', 'Sold To Code']),
+    shipToCode: idx(['ShipToCode', 'Ship To Code']),
+    endUserCode: idx(['EndUserCode', 'End User Code']),
+    pic: idx(['Pic', 'PIC']),
+  };
+}
+
 export function resolveImportMetadataColumns(header: unknown[]): ImportMetadataColumns {
+  if (isUfaImportHeader(header)) return resolveUfaMetadataColumns(header);
   const secondColumn = normalizeHeader(header[1]).toUpperCase();
   if (secondColumn === 'H/C') return POLYMER_METADATA_COLUMNS;
   if (secondColumn === 'CODE') return CP_METADATA_COLUMNS;
@@ -269,10 +383,10 @@ export function buildExtendedForecastColumns(
   header.forEach((value, index) => {
     const parsed = parseMonthTokenFromPrefixedHeader(value);
     if (!parsed) return;
-    const normalized = normalizeHeader(value);
-    if (/^P_/i.test(normalized)) {
+    const normalized = normalizeHeader(value).replaceAll(/\s+/g, '');
+    if (/^P_/i.test(normalized) || /_PRICE$/i.test(normalized)) {
       priceByMonth.set(parsed.month, { index, header: parsed.header });
-    } else if (/^A_/i.test(normalized)) {
+    } else if (/^A_/i.test(normalized) || /_(AMT|AMOUNT)$/i.test(normalized)) {
       amountByMonth.set(parsed.month, { index, header: parsed.header });
     }
   });
@@ -306,7 +420,7 @@ export function sheetHasLegacyImportLayout(sheet: XLSX.WorkSheet) {
     raw: true,
   });
   const header = rows[0] ?? [];
-  if (normalizeHeader(header[0]) !== KEY_HEADER) return false;
+  if (!isImportKeyHeader(header[0])) return false;
   return header.some((value, index) => parseForecastMonthColumn(value, index) !== null);
 }
 

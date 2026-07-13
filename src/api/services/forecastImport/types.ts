@@ -138,6 +138,11 @@ export type ExcelForecastGroup = {
   subApplication: string | null;
   owner: string | null;
   businessUnit: string | null;
+  productName: string | null;
+  gradeUfa: string | null;
+  gradeSap: string | null;
+  materialDescription: string | null;
+  registrationTopic: string | null;
   forecastValues: number[];
   priceValues: number[];
   amountValues: number[];
@@ -216,6 +221,10 @@ export type AutoCreateRegistrationPackage = {
   process: string | null;
   application: string | null;
   subApp: string | null;
+  productName: string | null;
+  gradeUfa: string | null;
+  gradeSap: string | null;
+  registrationTopic: string | null;
   spread: string | null;
   hasImportedPrice: boolean;
   pendingForecastRecords: PendingImportForecastRecord[];

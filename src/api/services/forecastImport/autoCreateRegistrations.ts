@@ -7,6 +7,8 @@ import { applyCustomerMasterNames } from '../registrationNameResolver';
 import { getActiveSnapshotVersion } from '../dataSnapshot';
 import { normalizeKey, primarySourceEntry, unknownToDisplayString } from './excelUtils';
 import { detectEmptyKeySegments, parseExcelKey } from './keyDiagnostics';
+import { isExcludedImportPlantKey } from './matching';
+import { isRegistrationInAppMode } from '../../../config/appMode';
 import type {
   AutoCreateRegistrationPackage,
   ConfirmLegacyImportRecord,
@@ -94,7 +96,8 @@ export function resolvePlantCodeAndName(excelPlant: string | null, keyPlantSegme
   }
 
   let plantName = plantNameFromExcel;
-  if (plantName && isCountryLikeLabel(plantName)) {
+  // Excel "Plant (use)" is often a plant code, not a display name — never store codes as PlantName.
+  if (plantName && (isCountryLikeLabel(plantName) || isLikelyPlantCode(plantName))) {
     plantName = null;
   }
 
@@ -120,7 +123,7 @@ function sanitizeRepairPlantFields(plantCode: string, plantName: string | null) 
     }
   }
 
-  if (name && isCountryLikeLabel(name)) {
+  if (name && (isCountryLikeLabel(name) || isLikelyPlantCode(name))) {
     name = null;
   }
 
@@ -265,7 +268,10 @@ export function buildRegistrationCreateData(candidate: AutoCreateRegistrationPac
 
   if (hasValidSixSegmentKey(rawExcelKey)) {
     const keyForNoCRM = [soldToCode, shipToCode, endUserCode, plantCode, materialCode, onOffSpec].join('/');
-    const registrationTopic = `IMP_${plantCode}_${materialCode}`;
+    const registrationTopic = truncate(
+      nullableText(candidate.registrationTopic) ?? `IMP_${plantCode}_${materialCode}`,
+      500,
+    );
     return {
       newKey: truncate(`${registrationTopic}/${keyForNoCRM}`, 1000),
       keyForNoCRM,
@@ -289,6 +295,9 @@ export function buildRegistrationCreateData(candidate: AutoCreateRegistrationPac
       process: categories.process,
       application: categories.application,
       subApp: categories.subApp,
+      productNamePud: nullableText(candidate.productName),
+      gradeUfa: nullableText(candidate.gradeUfa),
+      gradeSap: nullableText(candidate.gradeSap),
       commission: 0,
       commissionIndirect: 0,
       commissionFinancialDiscount: 0,
@@ -299,12 +308,15 @@ export function buildRegistrationCreateData(candidate: AutoCreateRegistrationPac
   }
 
   const keyForNoCRM = rawExcelKey;
-  const registrationTopic = `IMP_RAW_${plantCode}_${materialCode}`;
+  const registrationTopic = truncate(
+    nullableText(candidate.registrationTopic) ?? `IMP_RAW_${plantCode}_${materialCode}`,
+    500,
+  );
   return {
     newKey: truncate(`IMP_RAW/${keyForNoCRM}`, 1000),
     keyForNoCRM,
     mainRegist: 1,
-    registrationTopic: truncate(registrationTopic, 500),
+    registrationTopic,
     soldToCode,
     shipToCode,
     endUserCode,
@@ -323,6 +335,9 @@ export function buildRegistrationCreateData(candidate: AutoCreateRegistrationPac
     process: categories.process,
     application: categories.application,
     subApp: categories.subApp,
+    productNamePud: nullableText(candidate.productName),
+    gradeUfa: nullableText(candidate.gradeUfa),
+    gradeSap: nullableText(candidate.gradeSap),
     commission: 0,
     commissionIndirect: 0,
     commissionFinancialDiscount: 0,
@@ -416,6 +431,11 @@ export function buildRepairManagedRegistrationData(row: {
     process: row.process,
     application: row.application,
     subApp: row.subApp,
+    productName: null,
+    gradeUfa: null,
+    gradeSap: null,
+    registrationTopic: null,
+    spread: null,
     hasImportedPrice: row.hasImportedPrice,
     pendingForecastRecords: [],
   });
@@ -440,7 +460,7 @@ function buildPackageBase(
       ? codes.onOffSpec
       : canonicalOnOff(group.onOff),
     ownerName: group.owner,
-    materialDescription: '',
+    materialDescription: group.materialDescription ?? '',
     countryName: group.country,
     shipToName: group.shipTo,
     soldToName: group.soldTo,
@@ -449,6 +469,10 @@ function buildPackageBase(
     process: group.process,
     application: group.application,
     subApp: group.subApplication,
+    productName: group.productName,
+    gradeUfa: group.gradeUfa,
+    gradeSap: group.gradeSap,
+    registrationTopic: group.registrationTopic,
     spread: group.spread,
     hasImportedPrice,
     pendingForecastRecords,
@@ -507,7 +531,15 @@ export function collectAutoCreateCandidates(
   const keys = new Set(unmatchedKeys);
 
   return [...excelGroups.values()]
-    .filter(group => keys.has(group.keyNoRegist))
+    .filter(group => keys.has(group.keyNoRegist) && !isExcludedImportPlantKey(group.keyNoRegist))
+    .filter(group => {
+      const plant = parseExcelKey(group.keyNoRegist).plant;
+      const businessUnit = group.businessUnit ?? businessUnitFromPlantCode(plant);
+      return isRegistrationInAppMode(
+        typeof businessUnit === 'string' ? businessUnit : null,
+        plant
+      );
+    })
     .map(group => buildPackage(group));
 }
 
