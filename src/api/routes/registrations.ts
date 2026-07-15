@@ -8,6 +8,7 @@ import { upsertRegistrationPriceSettings, upsertRegistrationSpread } from '../se
 import { businessUnitFromPlantCode, crmBusinessUnitSelectSql } from '../services/businessUnit';
 import { getActiveSnapshotVersion } from '../services/dataSnapshot';
 import {
+  assertRegistrationIdsInAppMode,
   buildAppModeRegistrationScopeSql,
   clampBusinessUnitFilterValues,
   isRegistrationInAppMode,
@@ -698,6 +699,7 @@ router.post('/', async (req, res) => {
 
 router.patch('/:id/spread', async (req, res) => {
   try {
+    await assertRegistrationIdsInAppMode([req.params.id]);
     const updatedBy = typeof req.body?.updatedBy === 'string' ? req.body.updatedBy : undefined;
     const result = await upsertRegistrationSpread(req.params.id, req.body?.spread, updatedBy);
     clearRegistrationDependentCaches();
@@ -707,6 +709,9 @@ router.patch('/:id/spread', async (req, res) => {
       ? String((error as { code?: string }).code)
       : undefined;
     const message = error instanceof Error ? error.message : 'Failed to update spread';
+    if (code === 'REGISTRATION_OUT_OF_MODE') {
+      return res.status(403).json({ error: message, code });
+    }
     if (code === 'VALIDATION') {
       return res.status(400).json({ error: message, code });
     }
@@ -717,6 +722,7 @@ router.patch('/:id/spread', async (req, res) => {
 
 router.patch('/:id/price-settings', async (req, res) => {
   try {
+    await assertRegistrationIdsInAppMode([req.params.id]);
     const updatedBy = typeof req.body?.updatedBy === 'string' ? req.body.updatedBy : undefined;
     const result = await upsertRegistrationPriceSettings(req.params.id, {
       spread: Object.prototype.hasOwnProperty.call(req.body ?? {}, 'spread')
@@ -734,6 +740,9 @@ router.patch('/:id/price-settings', async (req, res) => {
       ? String((error as { code?: string }).code)
       : undefined;
     const message = error instanceof Error ? error.message : 'Failed to update price settings';
+    if (code === 'REGISTRATION_OUT_OF_MODE') {
+      return res.status(403).json({ error: message, code });
+    }
     if (code === 'VALIDATION') {
       return res.status(400).json({ error: message, code });
     }
@@ -748,6 +757,12 @@ router.patch('/:id', async (req, res) => {
       where: { id: req.params.id },
     });
     if (!existing) return res.status(404).json({ error: 'New registration not found' });
+    if (!isRegistrationInAppMode(existing.businessUnit, existing.plantCode)) {
+      return res.status(403).json({
+        error: 'Registration is outside the selected application mode',
+        code: 'REGISTRATION_OUT_OF_MODE',
+      });
+    }
 
     const result = await resolveManagedRegistrationUpdate(existing, req.body ?? {});
     clearRegistrationDependentCaches();
@@ -782,9 +797,15 @@ router.delete('/:id', async (req, res) => {
   try {
     const existing = await prisma.masterDataCrmRegistration.findUnique({
       where: { id: req.params.id },
-      select: { id: true },
+      select: { id: true, businessUnit: true, plantCode: true },
     });
     if (!existing) return res.status(404).json({ error: 'New registration not found' });
+    if (!isRegistrationInAppMode(existing.businessUnit, existing.plantCode)) {
+      return res.status(403).json({
+        error: 'Registration is outside the selected application mode',
+        code: 'REGISTRATION_OUT_OF_MODE',
+      });
+    }
 
     const referenceCount = await prisma.forecastValue.count({
       where: { registrationId: req.params.id },

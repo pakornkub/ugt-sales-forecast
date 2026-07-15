@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import type { Request } from 'express';
 import type { AuthUser } from '../auth';
+import {
+  assertRegistrationIdsInAppMode,
+  filterRegistrationIdsInAppMode,
+} from '../../config/appMode';
 import prisma from '../../db/prisma';
 import { requireAdmin } from '../services/appRoles';
 
@@ -271,14 +275,18 @@ router.post('/values/query', async (req, res) => {
       columnIds?: unknown;
     };
 
-    const registrationIds = Array.isArray(body.registrationIds)
+    const requestedIds = Array.isArray(body.registrationIds)
       ? body.registrationIds.map(value => String(value ?? '').trim()).filter(Boolean)
       : [];
-    if (registrationIds.length === 0) {
+    if (requestedIds.length === 0) {
       return res.json([]);
     }
-    if (registrationIds.length > MAX_REGISTRATION_IDS) {
+    if (requestedIds.length > MAX_REGISTRATION_IDS) {
       return res.status(400).json({ error: `registrationIds exceeds limit of ${MAX_REGISTRATION_IDS}` });
+    }
+    const registrationIds = await filterRegistrationIdsInAppMode(requestedIds);
+    if (registrationIds.length === 0) {
+      return res.json([]);
     }
 
     const columnIds = Array.isArray(body.columnIds)
@@ -316,6 +324,7 @@ router.patch('/:columnId/values/:registrationId', async (req, res) => {
     if (!columnId || !registrationId) {
       return res.status(400).json({ error: 'columnId and registrationId are required' });
     }
+    await assertRegistrationIdsInAppMode([registrationId]);
 
     const column = await prisma.customColumnDefinition.findFirst({
       where: { id: columnId, isActive: true },
@@ -363,6 +372,15 @@ router.patch('/:columnId/values/:registrationId', async (req, res) => {
 
     res.json(saved);
   } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: string }).code)
+      : undefined;
+    if (code === 'REGISTRATION_OUT_OF_MODE') {
+      return res.status(403).json({
+        error: error instanceof Error ? error.message : 'Registration outside selected mode',
+        code,
+      });
+    }
     console.error('[custom-columns] upsert value error:', error);
     res.status(500).json({ error: 'Failed to save custom column value' });
   }

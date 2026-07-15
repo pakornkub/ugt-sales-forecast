@@ -2,6 +2,12 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
+import {
+  DEFAULT_APP_BASE_PATH,
+  parsePublicAppMode,
+  toPublicAppMode,
+  type AppMode,
+} from '../config/appMode';
 import { resolveSessionPermissions } from './services/appRoles';
 
 export interface AuthUser {
@@ -21,6 +27,7 @@ interface AuthState {
   nonce: string;
   codeVerifier: string;
   createdAt: number;
+  returnMode?: AppMode;
 }
 
 interface SessionData {
@@ -41,15 +48,27 @@ class AuthHttpError extends Error {
   }
 }
 
-export function normalizeBasePath(value = process.env.APP_BASE_PATH ?? '/ugt-sales-forecast/nylon') {
+export function normalizeBasePath(value = process.env.APP_BASE_PATH ?? DEFAULT_APP_BASE_PATH) {
   const trimmed = value.trim();
   if (!trimmed || trimmed === '/') return '';
   return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`;
 }
 
-export function getAppPath() {
+function resolveReturnMode(req?: Request, fallback?: AppMode): AppMode {
+  if (req) {
+    const queryMode = typeof req.query.mode === 'string' ? req.query.mode : undefined;
+    const headerMode = req.header('x-app-mode') ?? undefined;
+    if (queryMode || headerMode) return parsePublicAppMode(queryMode ?? headerMode);
+  }
+  return fallback ?? 'nyl';
+}
+
+export function getAppPath(req?: Request, mode?: AppMode) {
   const basePath = normalizeBasePath();
-  return basePath || '/';
+  const resolvedMode = mode ?? resolveReturnMode(req);
+  const publicMode = toPublicAppMode(resolvedMode);
+  const path = basePath || '/';
+  return `${path}?mode=${publicMode}`;
 }
 
 function isDevAuthBypass() {
@@ -146,7 +165,12 @@ function decodeAuthStateToken(value: string) {
     ) {
       return null;
     }
-    return decoded as AuthState;
+    return {
+      nonce: decoded.nonce,
+      codeVerifier: decoded.codeVerifier,
+      createdAt: decoded.createdAt,
+      returnMode: decoded.returnMode === 'ufa' ? 'ufa' : decoded.returnMode === 'nyl' ? 'nyl' : undefined,
+    };
   } catch {
     return null;
   }
@@ -185,6 +209,7 @@ function decodeStateCookie(value: string | undefined) {
         nonce: decoded.nonce,
         codeVerifier: decoded.codeVerifier,
         createdAt: decoded.createdAt,
+        returnMode: decoded.returnMode === 'ufa' ? 'ufa' : decoded.returnMode === 'nyl' ? 'nyl' : undefined,
       },
     };
   } catch {
@@ -364,11 +389,10 @@ function getCallbackUrl(req?: Request) {
 }
 
 function getPostLogoutUrl(req?: Request) {
-  return `${getPublicBaseUrl(req)}${getAppPath()}`;
+  return `${getPublicBaseUrl(req)}${getAppPath(req)}`;
 }
 
-function renderLoginPage(message?: string) {
-  const authStartPath = `${normalizeBasePath()}/auth/start`;
+function renderLoginPage(message?: string, authStartPath = `${normalizeBasePath()}/auth/start?mode=nylon`) {
   const safeMessage = message
     ? [...message].map(char => ({
         '&': '&amp;',
@@ -728,9 +752,10 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const user = getUserFromRequest(req);
   if (!user) {
     const basePath = normalizeBasePath();
+    const mode = toPublicAppMode(resolveReturnMode(req));
     return res.status(401).json({
       error: 'AUTH_REQUIRED',
-      loginUrl: `${basePath}/auth/login`,
+      loginUrl: `${basePath}/auth/login?mode=${mode}`,
     });
   }
   (req as Request & { user?: AuthUser }).user = user;
@@ -744,26 +769,29 @@ export function createAuthRouter() {
     const user = getUserFromRequest(req);
     if (!user) {
       const basePath = normalizeBasePath();
+      const mode = toPublicAppMode(resolveReturnMode(req));
       return res.status(401).json({
         authenticated: false,
-        loginUrl: `${basePath}/auth/login`,
+        loginUrl: `${basePath}/auth/login?mode=${mode}`,
       });
     }
     const permissions = await resolveSessionPermissions(user);
     res.json({ authenticated: true, user, permissions });
   });
 
-  router.get('/login', (_req, res) => {
-    res.type('html').send(renderLoginPage());
+  router.get('/login', (req, res) => {
+    const mode = toPublicAppMode(resolveReturnMode(req));
+    const authStartPath = `${normalizeBasePath()}/auth/start?mode=${mode}`;
+    res.type('html').send(renderLoginPage(undefined, authStartPath));
   });
 
   router.get('/start', async (req, res) => {
-    const basePath = normalizeBasePath();
+    const returnMode = resolveReturnMode(req);
     if (isDevAuthBypass()) {
       const sessionId = crypto.randomUUID();
       sessions.set(sessionId, { user: getDevUser() });
       setSessionCookie(res, sessionId);
-      return res.redirect(getAppPath());
+      return res.redirect(getAppPath(req, returnMode));
     }
 
     try {
@@ -771,7 +799,12 @@ export function createAuthRouter() {
       const nonce = crypto.randomUUID();
       const codeVerifier = randomBase64Url(64);
       const codeChallenge = createCodeChallenge(codeVerifier);
-      const authState = { nonce, codeVerifier, createdAt: Date.now() };
+      const authState: AuthState = {
+        nonce,
+        codeVerifier,
+        createdAt: Date.now(),
+        returnMode,
+      };
       const state = encodeAuthStateToken(authState);
       authStates.set(state, authState);
       setOAuthStateCookie(res, state, authState);
@@ -814,7 +847,8 @@ export function createAuthRouter() {
       const sessionId = crypto.randomUUID();
       sessions.set(sessionId, session);
       setSessionCookie(res, sessionId);
-      res.redirect(getAppPath());
+      const returnMode: AppMode = savedState.returnMode === 'ufa' ? 'ufa' : 'nyl';
+      res.redirect(getAppPath(undefined, returnMode));
     } catch (error) {
       console.error('[auth] callback failed:', error);
       res.status(401).type('html').send(

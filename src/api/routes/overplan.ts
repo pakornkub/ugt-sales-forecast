@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
+import { getAppMode } from '../../config/appMode';
 import prisma from '../../db/prisma';
 import {
   aggregateOverplanRows,
@@ -432,6 +433,7 @@ function evaluationCoreCacheKey(
   dataStamp: string
 ) {
   return stableJson({
+    appMode: getAppMode(),
     configUpdatedAt,
     dataStamp,
     startMonth: body.startMonth,

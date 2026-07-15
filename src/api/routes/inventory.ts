@@ -1,5 +1,10 @@
 import { Prisma, PrismaClient } from '@prisma/client';
 import { Router } from 'express';
+import {
+  buildAppModeRegistrationScopeSql,
+  filterRegistrationIdsInAppMode,
+  getAppMode,
+} from '../../config/appMode';
 import prisma from '../../db/prisma';
 import { getRegistrationSourceSql } from './registrations';
 
@@ -30,14 +35,13 @@ interface InventoryApiRow {
   inventoryDate: string | null;
 }
 
-let inventoryCache: { expiresAt: number; promise: Promise<InventoryApiRow[]> } | null = null;
 const inventoryQueryCache = new Map<
   string,
   { expiresAt: number; promise: Promise<InventoryApiRow[]> }
 >();
 
 function inventoryQueryCacheKey(registrationIds: string[]) {
-  return registrationIds.slice().sort().join('|');
+  return `${getAppMode()}|${registrationIds.slice().sort().join('|')}`;
 }
 
 function normalizeQuantity(value: unknown) {
@@ -124,6 +128,7 @@ async function loadInventoryRows() {
     ])
   );
 
+  const modeScopeSql = buildAppModeRegistrationScopeSql('r');
   const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
     WITH registration_source AS (${registrationSource})
     SELECT
@@ -135,6 +140,7 @@ async function loadInventoryRows() {
       r.MaterialDescription AS materialDescription
     FROM registration_source r
     WHERE r.RegistrationId IS NOT NULL
+      ${modeScopeSql}
     ORDER BY r.OwnerName, r.RegistrationTopic, r.PlantCode, r.MaterialCode
   `;
 
@@ -147,8 +153,11 @@ async function loadInventoryRows() {
 
 async function loadInventoryRowsForRegistrationIds(registrationIds: string[]) {
   if (registrationIds.length === 0) return [];
+  const allowedIds = await filterRegistrationIdsInAppMode(registrationIds);
+  if (allowedIds.length === 0) return [];
 
   const registrationSource = await getRegistrationSourceSql();
+  const modeScopeSql = buildAppModeRegistrationScopeSql('r');
   const registrations = await prisma.$queryRaw<Array<Record<string, unknown>>>`
     WITH registration_source AS (${registrationSource})
     SELECT
@@ -159,7 +168,8 @@ async function loadInventoryRowsForRegistrationIds(registrationIds: string[]) {
       r.MaterialCode AS materialCode,
       r.MaterialDescription AS materialDescription
     FROM registration_source r
-    WHERE r.RegistrationId IN (${Prisma.join(registrationIds)})
+    WHERE r.RegistrationId IN (${Prisma.join(allowedIds)})
+      ${modeScopeSql}
   `;
   if (registrations.length === 0) return [];
 
@@ -255,19 +265,27 @@ router.post('/query', async (req, res) => {
   }
 });
 
+const inventoryListCacheByMode = new Map<
+  string,
+  { expiresAt: number; promise: Promise<InventoryApiRow[]> }
+>();
+
 router.get('/', async (_req, res) => {
-  if (!inventoryCache || inventoryCache.expiresAt <= Date.now()) {
-    inventoryCache = {
+  const mode = getAppMode();
+  let cached = inventoryListCacheByMode.get(mode);
+  if (!cached || cached.expiresAt <= Date.now()) {
+    cached = {
       expiresAt: Date.now() + CACHE_TTL_MS,
       promise: loadInventoryRows().catch(error => {
-        inventoryCache = null;
+        inventoryListCacheByMode.delete(mode);
         throw error;
       }),
     };
+    inventoryListCacheByMode.set(mode, cached);
   }
 
   try {
-    res.json(await inventoryCache.promise);
+    res.json(await cached.promise);
   } catch (error) {
     console.error('[inventory] GET error:', error);
     res.status(500).json({

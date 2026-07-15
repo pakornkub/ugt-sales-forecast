@@ -13,6 +13,10 @@ import type {
   PriceManagementType,
   Registration,
 } from '../types/forecast';
+import {
+  getActiveClientAppMode,
+  toPublicAppMode,
+} from './appModeClient';
 import { withRegistrationIncompleteFlag } from './registrationIncomplete';
 
 export const REGISTRATION_PAGE_SIZE = 80;
@@ -410,6 +414,7 @@ export interface OverplanEvaluateRequest {
 
 export type AppConfig = {
   appMode: 'nyl' | 'ufa';
+  publicMode?: 'nylon' | 'ufa';
   allowedBusinessUnits: string[];
   displayName: string;
   basePath: string;
@@ -527,10 +532,27 @@ function withAppBase(path: string) {
   return `${appBasePath}${normalizedPath}`;
 }
 
+function withModeQuery(path: string) {
+  const mode = toPublicAppMode(getActiveClientAppMode());
+  const [pathname, query = ''] = path.split('?');
+  const params = new URLSearchParams(query);
+  params.set('mode', mode);
+  const qs = params.toString();
+  return qs ? `${pathname}?${qs}` : pathname;
+}
+
+function modeHeaders(): HeadersInit {
+  return { 'X-App-Mode': toPublicAppMode(getActiveClientAppMode()) };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(withAppBase(path), {
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+  const res = await fetch(withAppBase(withModeQuery(path)), {
     ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...modeHeaders(),
+      ...init?.headers,
+    },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -629,7 +651,9 @@ export const api = {
 
   auth: {
     me: async (): Promise<AuthMeResponse> => {
-      const res = await fetch(withAppBase('/auth/me'));
+      const res = await fetch(withAppBase(withModeQuery('/auth/me')), {
+        headers: modeHeaders(),
+      });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new ApiError(res.status, body?.error ?? `Request failed: ${res.status}`, body);
@@ -641,7 +665,7 @@ export const api = {
       if (result.logoutUrl) window.location.href = result.logoutUrl;
       return result;
     },
-    loginUrl: () => withAppBase('/auth/login'),
+    loginUrl: () => withAppBase(withModeQuery('/auth/login')),
   },
 
   sync: {
@@ -968,10 +992,11 @@ export const api = {
 
   imports: {
     forecastPreview: async (file: File): Promise<ForecastImportPreview> => {
-      const res = await fetch(withAppBase('/api/import/forecast/preview'), {
+      const res = await fetch(withAppBase(withModeQuery('/api/import/forecast/preview')), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          ...modeHeaders(),
         },
         body: await file.arrayBuffer(),
       });
@@ -1009,10 +1034,11 @@ export const api = {
       });
     },
     currentForecastPreview: async (file: File): Promise<CurrentForecastImportPreview> => {
-      const res = await fetch(withAppBase('/api/import/current-forecast/preview'), {
+      const res = await fetch(withAppBase(withModeQuery('/api/import/current-forecast/preview')), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          ...modeHeaders(),
         },
         body: await file.arrayBuffer(),
       });
