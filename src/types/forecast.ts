@@ -1,7 +1,7 @@
 export type Dimension = 'Qty' | 'Price' | 'Amount';
 export type ValueType = 'Act' | 'Fcst' | 'Act-Fcst';
-export type PriceFormula = 'CPL' | 'Naphtha' | 'Benzene' | 'Fixed Price';
-export const PRICE_FORMULA_OPTIONS: PriceFormula[] = ['CPL', 'Naphtha', 'Benzene', 'Fixed Price'];
+export type PriceFormula = 'CPL' | 'Naphtha' | 'Benzene' | 'CPL (Tecnon)' | 'CPL (PCI)' | 'Fixed Price';
+export const PRICE_FORMULA_OPTIONS: PriceFormula[] = ['CPL', 'Naphtha', 'Benzene', 'CPL (Tecnon)', 'CPL (PCI)', 'Fixed Price'];
 export type CarryDetailKey = 'carryIn' | 'carryOut' | 'carryTotal';
 export type CarryDetailVisibility = Record<CarryDetailKey, boolean>;
 
@@ -60,6 +60,9 @@ export const REG_COLUMN_KEYS = [
   'endUserExportControl',
   'endUserName',
   'productName',
+  'productNamePud',
+  'gradeUfa',
+  'gradeSap',
   'column1',
   'priceFormula',
   'spread',
@@ -119,13 +122,17 @@ export interface Registration {
   endUserExportControl: string;
   endUserName: string;
   productName: string;
+  productNamePud: string;
+  gradeUfa: string;
+  gradeSap: string;
   column1: string;
   carryInETD: number;
   carryOutETD: number;
   carryInLoading: number;
   carryOutLoading: number;
   priceFormula: string;
-  spread: number;
+  spread: string | null;
+  pricingPolicy?: string | null;
   createdBy?: string;
   inventoryA0Qty?: number;
   inventoryNonA0Qty?: number;
@@ -162,6 +169,10 @@ export interface PriceManagementRow {
   cplPrice: number;
   naphthaPrice: number;
   benzenePrice: number;
+  jpyUsdRate: number;
+  thbUsdRate: number;
+  cplTecnonPrice: number;
+  cplPciPrice: number;
 }
 
 export interface ActualValue {
@@ -258,6 +269,37 @@ export const EMPTY_COLUMN_FILTER: ColumnFilterValue = {
   searchText: '',
   selectedValues: [],
 };
+
+export type CustomColumnType = 'text' | 'number' | 'dropdown';
+
+export interface CustomColumnDef {
+  id: string;
+  name: string;
+  type: CustomColumnType;
+  dropdownOptions?: string[];
+  defaultValue?: string;
+  displayOrder: number;
+}
+
+export interface CustomColumnValue {
+  columnId: string;
+  registrationId: string;
+  value: string | null;
+}
+
+export type CustomColumnValuesMap = Map<string, Record<string, string | null>>;
+
+export function customColumnFilterKey(columnId: string): string {
+  return `customCol_${columnId}`;
+}
+
+export function isCustomColumnFilterKey(key: string): boolean {
+  return key.startsWith('customCol_');
+}
+
+export function customColumnIdFromFilterKey(key: string): string {
+  return key.replace(/^customCol_/, '');
+}
 
 /** @deprecated Layout is column order only; kept for compatibility if referenced elsewhere. */
 export interface RegTableLayoutState {

@@ -27,8 +27,8 @@ if (missing.length > 0) {
 }
 
 const errors = [];
-if (env.APP_BASE_PATH !== '/ugt-sales-forecast') {
-  errors.push('APP_BASE_PATH must be /ugt-sales-forecast');
+if (!/^\/ugt-sales-forecast\/(nylon|ufa)$/.test(env.APP_BASE_PATH)) {
+  errors.push('APP_BASE_PATH must be /ugt-sales-forecast/nylon or /ugt-sales-forecast/ufa');
 }
 if (env.APP_BASE_URL !== 'https://ugtweb.ube.co.th') {
   errors.push('APP_BASE_URL must be https://ugtweb.ube.co.th');

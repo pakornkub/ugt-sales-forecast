@@ -4,9 +4,14 @@ import prisma from '../../db/prisma';
 import { clearActualCaches } from './actuals';
 import { isIncompleteManagedRegistration } from '../services/registrationIdentity';
 import { resolveManagedRegistrationUpdate } from '../services/registrationResolver';
-import { upsertRegistrationSpread } from '../services/registrationPricing';
+import { upsertRegistrationPriceSettings, upsertRegistrationSpread } from '../services/registrationPricing';
 import { businessUnitFromPlantCode, crmBusinessUnitSelectSql } from '../services/businessUnit';
 import { getActiveSnapshotVersion } from '../services/dataSnapshot';
+import {
+  buildAppModeRegistrationScopeSql,
+  clampBusinessUnitFilterValues,
+  isRegistrationInAppMode,
+} from '../../config/appMode';
 
 const router = Router();
 const DEFAULT_PAGE_SIZE = 80;
@@ -42,8 +47,11 @@ const managedRegistrationSourceSql = Prisma.sql`
     r.application AS Application, r.subApp AS SubApp, r.zoneName AS ZoneName,
     r.plantName AS PlantName, r.countryCode AS CountryCode, r.endUserCode AS EndUserCode,
     r.endUserExportControl AS EndUserExportControl, r.endUserName AS EndUserName,
-    r.productName AS ProductName, r.priceFormula AS PriceFormula,
-    COALESCE(rps.spread, r.spread, 0) AS Spread,
+    r.productName AS ProductName,
+    r.productNamePud AS ProductNamePud, r.gradeUfa AS GradeUfa, r.gradeSap AS GradeSap,
+    r.priceFormula AS PriceFormula,
+    COALESCE(NULLIF(LTRIM(RTRIM(rps.spread)), ''), NULLIF(LTRIM(RTRIM(r.spread)), '')) AS Spread,
+    COALESCE(NULLIF(LTRIM(RTRIM(rps.pricingPolicy)), ''), NULLIF(LTRIM(RTRIM(r.pricingPolicy)), '')) AS PricingPolicy,
     r.businessUnit AS BusinessUnit, r.createdBy AS CreatedBy,
     CAST(1 AS BIT) AS IsManaged
   FROM dbo.master_data_crm_registrations r
@@ -77,8 +85,14 @@ export async function getRegistrationSourceSql() {
         r.subApp AS SubApp, r.zoneName AS ZoneName, r.plantName AS PlantName,
         r.countryCode AS CountryCode, r.endUserCode AS EndUserCode,
         r.endUserExportControl AS EndUserExportControl, r.endUserName AS EndUserName,
-        r.productName AS ProductName, CAST('' AS NVARCHAR(50)) AS PriceFormula,
-        COALESCE(rps.spread, 0) AS Spread, r.businessUnit AS BusinessUnit,
+        r.productName AS ProductName,
+        CAST(NULL AS NVARCHAR(500)) AS ProductNamePud,
+        CAST(NULL AS NVARCHAR(500)) AS GradeUfa,
+        CAST(NULL AS NVARCHAR(500)) AS GradeSap,
+        CAST('' AS NVARCHAR(50)) AS PriceFormula,
+        NULLIF(LTRIM(RTRIM(rps.spread)), '') AS Spread,
+        NULLIF(LTRIM(RTRIM(rps.pricingPolicy)), '') AS PricingPolicy,
+        r.businessUnit AS BusinessUnit,
         CAST('' AS NVARCHAR(100)) AS CreatedBy,
         CAST(0 AS BIT) AS IsManaged
       FROM dbo.crm_registration_snapshot r
@@ -110,8 +124,12 @@ export async function getRegistrationSourceSql() {
     ISNULL(r.Cat3Name, '') AS SubApp,
     r.ZoneName, r.PlantName, r.CountryCode, r.EndUserCode,
     r.EndUserExportControl, r.EndUserName, r.ProductName,
+    CAST(NULL AS NVARCHAR(500)) AS ProductNamePud,
+    CAST(NULL AS NVARCHAR(500)) AS GradeUfa,
+    CAST(NULL AS NVARCHAR(500)) AS GradeSap,
     CAST('' AS NVARCHAR(50)) AS PriceFormula,
-    COALESCE(rps.spread, 0) AS Spread,
+    NULLIF(LTRIM(RTRIM(rps.spread)), '') AS Spread,
+    NULLIF(LTRIM(RTRIM(rps.pricingPolicy)), '') AS PricingPolicy,
     ${directCrmBusinessUnitSql},
     CAST('' AS NVARCHAR(100)) AS CreatedBy,
     CAST(0 AS BIT) AS IsManaged
@@ -170,6 +188,9 @@ const filterColumns: Record<string, Prisma.Sql> = {
   endUserExportControl: Prisma.sql`r.EndUserExportControl`,
   endUserName: Prisma.sql`r.EndUserName`,
   productName: Prisma.sql`r.ProductName`,
+  productNamePud: Prisma.sql`r.ProductNamePud`,
+  gradeUfa: Prisma.sql`r.GradeUfa`,
+  gradeSap: Prisma.sql`r.GradeSap`,
   column1: Prisma.sql`r.NewKey`,
 };
 
@@ -199,7 +220,7 @@ const optionalTextFields = [
   'agreedSpecType', 'wasteScrap', 'forResaleNotApprove', 'imdsDate', 'model',
   'approve', 'partName', 'coaName', 'process', 'application', 'subApp',
   'zoneName', 'plantName', 'countryCode', 'endUserExportControl',
-  'endUserName', 'productName',
+  'endUserName', 'productName', 'productNamePud', 'gradeUfa', 'gradeSap',
 ] as const;
 
 const optionalBodyKeys: Record<(typeof optionalTextFields)[number], string> = {
@@ -234,6 +255,9 @@ const optionalBodyKeys: Record<(typeof optionalTextFields)[number], string> = {
   endUserExportControl: 'endUserExportControl',
   endUserName: 'endUserName',
   productName: 'productName',
+  productNamePud: 'productNamePud',
+  gradeUfa: 'gradeUfa',
+  gradeSap: 'gradeSap',
 };
 
 function text(value: unknown) {
@@ -286,7 +310,8 @@ export function buildRegistrationFilterSql(filters: RegistrationFilters, exclude
     .map(([key, values]) => Prisma.sql`
       AND CONVERT(NVARCHAR(4000), ${filterColumns[key]}) IN (${Prisma.join(values)})
     `);
-  return clauses.length > 0 ? Prisma.join(clauses, ' ') : Prisma.empty;
+  const filterClauses = clauses.length > 0 ? Prisma.join(clauses, ' ') : Prisma.empty;
+  return Prisma.sql`${filterClauses} ${buildAppModeRegistrationScopeSql('r')}`;
 }
 
 export function normalizeRegistrationFilters(value: unknown): RegistrationFilters {
@@ -294,10 +319,16 @@ export function normalizeRegistrationFilters(value: unknown): RegistrationFilter
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
       .filter(([key, values]) => filterColumns[key] && Array.isArray(values))
-      .map(([key, values]) => [
-        key,
-        (values as unknown[]).map(item => scalarToString(item)).filter(Boolean).slice(0, 200),
-      ])
+      .map(([key, values]) => {
+        const normalized = (values as unknown[])
+          .map(item => scalarToString(item))
+          .filter(Boolean)
+          .slice(0, 200);
+        if (key === 'businessUnit') {
+          return [key, clampBusinessUnitFilterValues(normalized)];
+        }
+        return [key, normalized];
+      })
       .filter(([, values]) => values.length > 0)
   );
 }
@@ -402,6 +433,9 @@ function mapRegistrationRow(row: Record<string, unknown>) {
     endUserExportControl: String(row.EndUserExportControl ?? row.endUserExportControl ?? ''),
     endUserName: String(row.EndUserName ?? row.endUserName ?? ''),
     productName: String(row.ProductName ?? row.productName ?? ''),
+    productNamePud: String(row.ProductNamePud ?? row.productNamePud ?? ''),
+    gradeUfa: String(row.GradeUfa ?? row.gradeUfa ?? ''),
+    gradeSap: String(row.GradeSap ?? row.gradeSap ?? ''),
     column1: String(row.NewKey ?? row.newKey ?? ''),
     createdBy: scalarToString(row.CreatedBy ?? row.createdBy),
     isIncomplete: isIncompleteManagedRegistration({
@@ -419,7 +453,18 @@ function mapRegistrationRow(row: Record<string, unknown>) {
     carryInLoading: 0,
     carryOutLoading: 0,
     priceFormula: String(row.PriceFormula ?? row.priceFormula ?? 'CPL'),
-    spread: Number(row.Spread ?? row.spread ?? 0),
+    spread: (() => {
+      const raw = row.Spread ?? row.spread;
+      if (raw === null || raw === undefined) return null;
+      const text = String(raw).trim();
+      return text === '' ? null : text;
+    })(),
+    pricingPolicy: (() => {
+      const raw = row.PricingPolicy ?? row.pricingPolicy;
+      if (raw === null || raw === undefined) return null;
+      const text = String(raw).trim();
+      return text === '' ? null : text;
+    })(),
   };
 }
 
@@ -466,7 +511,11 @@ function createData(body: Record<string, unknown>) {
       commissionIndirect: decimalValue(body.commissionIndirect),
       commissionFinancialDiscount: decimalValue(body.commissionFinancialDiscount),
       priceFormula: text(body.priceFormula) || 'CPL',
-      spread: decimalValue(body.spread),
+      spread: (() => {
+        if (body.spread === null || body.spread === undefined) return null;
+        const textValue = String(body.spread).trim();
+        return textValue === '' ? null : textValue;
+      })(),
       createdBy: 'sales-forecast-web',
     },
   } as const;
@@ -517,7 +566,11 @@ router.get('/managed', async (_req, res) => {
     const rows = await prisma.masterDataCrmRegistration.findMany({
       orderBy: { createdAt: 'desc' },
     });
-    res.json(rows.map(row => mapRegistrationRow({ ...row, isManaged: true })));
+    res.json(
+      rows
+        .filter(row => isRegistrationInAppMode(row.businessUnit, row.plantCode))
+        .map(row => mapRegistrationRow({ ...row, isManaged: true }))
+    );
   } catch (error) {
     console.error('[registrations] managed GET error:', error);
     res.status(500).json({ error: 'Failed to fetch new registrations' });
@@ -610,6 +663,13 @@ router.post('/', async (req, res) => {
   const parsed = createData(req.body ?? {});
   if ('error' in parsed) return res.status(400).json({ error: parsed.error });
 
+  if (!isRegistrationInAppMode(parsed.data.businessUnit, parsed.data.plantCode)) {
+    return res.status(400).json({
+      error: 'Registration business unit is not allowed in this application mode',
+      code: 'BUSINESS_UNIT_NOT_ALLOWED',
+    });
+  }
+
   try {
     const duplicate = await findDuplicate(parsed.data.newKey, parsed.data.keyForNoCRM);
     if (duplicate) {
@@ -652,6 +712,33 @@ router.patch('/:id/spread', async (req, res) => {
     }
     console.error('[registrations] spread PATCH error:', error);
     res.status(500).json({ error: 'Failed to update spread' });
+  }
+});
+
+router.patch('/:id/price-settings', async (req, res) => {
+  try {
+    const updatedBy = typeof req.body?.updatedBy === 'string' ? req.body.updatedBy : undefined;
+    const result = await upsertRegistrationPriceSettings(req.params.id, {
+      spread: Object.prototype.hasOwnProperty.call(req.body ?? {}, 'spread')
+        ? req.body.spread
+        : undefined,
+      pricingPolicy: Object.prototype.hasOwnProperty.call(req.body ?? {}, 'pricingPolicy')
+        ? req.body.pricingPolicy
+        : undefined,
+      updatedBy,
+    });
+    clearRegistrationDependentCaches();
+    res.json(result);
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: string }).code)
+      : undefined;
+    const message = error instanceof Error ? error.message : 'Failed to update price settings';
+    if (code === 'VALIDATION') {
+      return res.status(400).json({ error: message, code });
+    }
+    console.error('[registrations] price-settings PATCH error:', error);
+    res.status(500).json({ error: 'Failed to update price settings' });
   }
 });
 

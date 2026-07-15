@@ -16,6 +16,9 @@ import {
   isFirstWednesdayPeriod,
   normalizeKey,
 } from './excelUtils';
+import { upsertRegistrationPriceSettings, upsertRegistrationSpread } from '../registrationPricing';
+import { isCostPlus5Spread, normalizePricingPolicy } from '../../../lib/pricingPolicy';
+import { getActiveSnapshotVersion } from '../dataSnapshot';
 import { findRegistrationMatches } from './matching';
 import { normalizeStampPeriod } from './stampPeriod';
 import type {
@@ -26,6 +29,8 @@ import type {
 type ImportColumnFlags = {
   hasPriceColumns: boolean;
   hasAmountColumns: boolean;
+  spreadByRegistrationId?: Record<string, string>;
+  pricingPolicyByRegistrationId?: Record<string, string>;
 };
 
 const LEGACY_IMPORT_COLUMN_FLAGS: ImportColumnFlags = {
@@ -130,6 +135,45 @@ function normalizeChangedBy(changedBy: unknown) {
   return String(changedBy ?? 'sales-forecast-web').trim() || 'sales-forecast-web';
 }
 
+async function applyImportedSpreads(
+  spreadByRegistrationId: Record<string, string> | undefined,
+  changedBy: string,
+) {
+  if (!spreadByRegistrationId) return;
+  const entries = Object.entries(spreadByRegistrationId);
+  for (const [registrationId, spread] of entries) {
+    await upsertRegistrationSpread(registrationId, spread, changedBy);
+  }
+}
+
+async function applyImportedPricingPolicies(
+  pricingPolicyByRegistrationId: Record<string, string> | undefined,
+  changedBy: string,
+) {
+  if (!pricingPolicyByRegistrationId) return;
+  const entries = Object.entries(pricingPolicyByRegistrationId);
+  for (const [registrationId, pricingPolicy] of entries) {
+    await upsertRegistrationPriceSettings(registrationId, {
+      pricingPolicy,
+      updatedBy: changedBy,
+    });
+  }
+}
+
+function registrationIdsWithLivePolicy(
+  pricingPolicyByRegistrationId: Record<string, string> | undefined,
+  spreadByRegistrationId: Record<string, string> | undefined,
+) {
+  const live = new Set<string>();
+  for (const [registrationId, policy] of Object.entries(pricingPolicyByRegistrationId ?? {})) {
+    if (normalizePricingPolicy(policy)) live.add(registrationId);
+  }
+  for (const [registrationId, spread] of Object.entries(spreadByRegistrationId ?? {})) {
+    if (isCostPlus5Spread(spread)) live.add(registrationId);
+  }
+  return live;
+}
+
 function parseLegacyRecords(records: ConfirmLegacyImportRecord[]): ConfirmLegacyImportRecord[] {
   assertRecordCount(records);
   const parsed: ConfirmLegacyImportRecord[] = [];
@@ -220,25 +264,63 @@ function parseVersionedRecords(
   return parsed;
 }
 
+async function registrationStillExists(registrationId: string) {
+  const id = registrationId.trim();
+  if (!id) return false;
+  const managed = await prisma.masterDataCrmRegistration.findFirst({
+    where: { OR: [{ id }, { newKey: id }] },
+    select: { id: true },
+  });
+  if (managed) return true;
+  const snapshotVersion = await getActiveSnapshotVersion();
+  if (snapshotVersion) {
+    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT TOP (1) r.registrationId AS id
+      FROM dbo.crm_registration_snapshot r
+      WHERE r.snapshotVersion = ${snapshotVersion}
+        AND (r.registrationId = ${id} OR r.newKey = ${id})
+    `;
+    return rows.length > 0;
+  }
+  const crm = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT TOP (1) CAST(ISNULL(r.NewKey, r.KeyforNoCRM) AS NVARCHAR(200)) AS id
+    FROM dbo.VW_CRM_RegistrationAll_1 r
+    WHERE r.MainRegist = 1
+      AND (CAST(r.NewKey AS NVARCHAR(200)) = ${id} OR CAST(r.KeyforNoCRM AS NVARCHAR(500)) = ${id})
+  `;
+  return crm.length > 0;
+}
+
 async function assertRegistrationMatchesUnchanged(
   records: Array<{ excelKeyForNoRegist: string; matchedRegistrationId: string }>
 ) {
+  const uniqueRecords = [
+    ...new Map(
+      records.map(record => [
+        `${record.excelKeyForNoRegist}|${record.matchedRegistrationId}`,
+        record,
+      ])
+    ).values(),
+  ];
   const registrationMatches = await findRegistrationMatches([
-    ...new Set(records.map(record => record.excelKeyForNoRegist)),
+    ...new Set(uniqueRecords.map(record => record.excelKeyForNoRegist)),
   ]);
 
-  for (const record of records) {
+  for (const record of uniqueRecords) {
     const matches = registrationMatches.get(record.excelKeyForNoRegist) ?? [];
-    if (
-      matches.length !== 1 ||
-      matches[0].registrationId !== record.matchedRegistrationId
-    ) {
-      throw new ForecastImportConfirmError(
-        409,
-        `Registration matching changed for ${record.excelKeyForNoRegist}. Run Preview again.`,
-        'REGISTRATION_MATCH_CHANGED'
-      );
+    if (matches.some(match => match.registrationId === record.matchedRegistrationId)) {
+      continue;
     }
+    // Auto-created rows may normalize plant (e.g. UBJ → 0), so Excel key no longer
+    // exact-matches CRM/managed lookup — accept if the destination registration still exists.
+    if (matches.length === 0 && await registrationStillExists(record.matchedRegistrationId)) {
+      continue;
+    }
+    throw new ForecastImportConfirmError(
+      409,
+      `Registration matching changed for ${record.excelKeyForNoRegist}. Run Preview again.`,
+      'REGISTRATION_MATCH_CHANGED'
+    );
   }
 }
 
@@ -450,10 +532,14 @@ export async function confirmLegacyImport(
     }
 
     if (columnFlags.hasPriceColumns) {
+      const livePolicyIds = registrationIdsWithLivePolicy(
+        columnFlags.pricingPolicyByRegistrationId,
+        columnFlags.spreadByRegistrationId,
+      );
       const registrationIdsWithFixedPrice = [
         ...new Set(
           parsedRecords
-            .filter(record => record.priceFcst > 0)
+            .filter(record => record.priceFcst > 0 && !livePolicyIds.has(record.matchedRegistrationId))
             .map(record => record.matchedRegistrationId)
         ),
       ];
@@ -465,6 +551,9 @@ export async function confirmLegacyImport(
       }
     }
   }, { timeout: 120_000 });
+
+  await applyImportedSpreads(columnFlags.spreadByRegistrationId, normalizedChangedBy);
+  await applyImportedPricingPolicies(columnFlags.pricingPolicyByRegistrationId, normalizedChangedBy);
 
   clearForecastSummaryCache();
   return buildImportResult(parsedRecords, existingKeys, CURRENT_FORECAST_VERSION, 'week');
@@ -623,10 +712,14 @@ export async function confirmVersionedImport(
     }
 
     if (columnFlags.hasPriceColumns) {
+      const livePolicyIds = registrationIdsWithLivePolicy(
+        columnFlags.pricingPolicyByRegistrationId,
+        columnFlags.spreadByRegistrationId,
+      );
       const registrationIdsWithFixedPrice = [
         ...new Set(
           parsedRecords
-            .filter(record => record.priceFcst > 0)
+            .filter(record => record.priceFcst > 0 && !livePolicyIds.has(record.matchedRegistrationId))
             .map(record => record.matchedRegistrationId)
         ),
       ];
@@ -638,6 +731,9 @@ export async function confirmVersionedImport(
       }
     }
   }, { timeout: 120_000 });
+
+  await applyImportedSpreads(columnFlags.spreadByRegistrationId, normalizedChangedBy);
+  await applyImportedPricingPolicies(columnFlags.pricingPolicyByRegistrationId, normalizedChangedBy);
 
   clearForecastSummaryCache();
   return buildImportResult(parsedRecords, existingKeys, versionName, 'month');

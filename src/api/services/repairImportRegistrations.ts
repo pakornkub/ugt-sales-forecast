@@ -2,7 +2,7 @@ import type { MasterDataCrmRegistration } from '@prisma/client';
 import prisma from '../../db/prisma';
 import { EXCEL_IMPORT_CREATED_BY } from './forecastImport/autoCreateRegistrations';
 import { buildRepairManagedRegistrationData } from './forecastImport/autoCreateRegistrations';
-import { isLikelyCompanyName, normalizeCrmCategoryFields } from './registrationCategory';
+import { isLikelyCompanyName, normalizeExcelImportCategoryFields } from './registrationCategory';
 import { applyCustomerMasterNames, resolveCustomerNamesFromMaster } from './registrationNameResolver';
 import { isLikelyPlantCode, isLikelyRegistrationCode } from './forecastImport/autoCreateRegistrations';
 
@@ -263,7 +263,7 @@ export async function repairExcelImportCategories(apply: boolean): Promise<Categ
   let rowsUnchanged = 0;
 
   for (const row of rows) {
-    const categories = normalizeCrmCategoryFields(row.process, row.application, row.subApp);
+    const categories = normalizeExcelImportCategoryFields(row.process, row.application, row.subApp);
     const updateData = {
       process: categories.process,
       application: categories.application,

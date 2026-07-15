@@ -77,7 +77,7 @@ model ForecastChangeLog {
   @@map("forecast_change_logs")
 }
 
-/// CPL (Cost Plus Landing) base prices by month
+/// @deprecated Legacy table — app uses price_management_values. Kept for DB compatibility only.
 model CplPrice {
   month     String  @id @db.NVarChar(7)  // "YYYY-MM"
   price     Decimal @default(0) @db.Decimal(18, 4)
@@ -89,20 +89,26 @@ model PriceManagementValue {
   month        String   @db.NVarChar(7)
   priceType    String   @db.NVarChar(10)
   versionName  String   @db.NVarChar(100)
-  cplPrice     Decimal  @default(0) @db.Decimal(18, 4)
-  naphthaPrice Decimal  @default(0) @db.Decimal(18, 4)
-  benzenePrice Decimal  @default(0) @db.Decimal(18, 4)
-  updatedAt    DateTime @default(now()) @updatedAt
+  cplPrice       Decimal  @default(0) @db.Decimal(18, 4)
+  naphthaPrice   Decimal  @default(0) @db.Decimal(18, 4)
+  benzenePrice   Decimal  @default(0) @db.Decimal(18, 4)
+  jpyUsdRate     Decimal  @default(0) @db.Decimal(18, 4)
+  thbUsdRate     Decimal  @default(0) @db.Decimal(18, 4)
+  cplTecnonPrice Decimal  @default(0) @db.Decimal(18, 4)
+  cplPciPrice    Decimal  @default(0) @db.Decimal(18, 4)
+  updatedAt      DateTime @default(now()) @updatedAt
 
   @@id([month, priceType, versionName])
   @@index([priceType, versionName, month])
   @@map("price_management_values")
 }
 
-/// Per-registration spread override for CRM registration IDs (and optional override layer).
+/// Per-registration spread / pricing-policy override for CRM registration IDs.
+/// Stored as text so formula notes can be kept; numeric-only values are parsed for price math.
 model RegistrationPriceSetting {
   registrationId String   @id @db.NVarChar(200)
-  spread         Decimal  @default(0) @db.Decimal(18, 4)
+  spread         String?  @db.NVarChar(1000)
+  pricingPolicy  String?  @db.NVarChar(50)
   updatedAt      DateTime @default(now()) @updatedAt
   updatedBy      String?  @db.NVarChar(200)
 
@@ -159,8 +165,12 @@ model MasterDataCrmRegistration {
   endUserExportControl        String?  @db.NVarChar(500)
   endUserName                 String?  @db.NVarChar(500)
   productName                 String?  @db.NVarChar(500)
+  productNamePud              String?  @db.NVarChar(500)
+  gradeUfa                    String?  @db.NVarChar(500)
+  gradeSap                    String?  @db.NVarChar(500)
   priceFormula                String   @default("CPL") @db.NVarChar(50)
-  spread                      Decimal  @default(0) @db.Decimal(18, 4)
+  spread                      String?  @db.NVarChar(1000)
+  pricingPolicy               String?  @db.NVarChar(50)
   createdBy                   String   @default("sales-forecast-web") @db.NVarChar(100)
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @default(now()) @updatedAt
@@ -261,6 +271,37 @@ model ForecastNotificationSendLog {
   @@index([email])
   @@index([commitBatchId])
   @@map("forecast_notification_send_log")
+}
+
+/// User-defined custom columns for registration grid.
+model CustomColumnDefinition {
+  id              String              @id @default(uuid()) @db.NVarChar(36)
+  name            String              @db.NVarChar(200)
+  type            String              @db.NVarChar(20)
+  dropdownOptions String?             @db.NVarChar(Max)
+  defaultValue    String?             @db.NVarChar(500)
+  displayOrder    Int                 @default(0)
+  isActive        Boolean             @default(true)
+  createdBy       String?             @db.NVarChar(200)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  values          CustomColumnValue[]
+
+  @@map("custom_column_definitions")
+}
+
+/// Per-registration values for custom columns.
+model CustomColumnValue {
+  id             Int                    @id @default(autoincrement())
+  columnId       String                 @db.NVarChar(36)
+  registrationId String                 @db.NVarChar(200)
+  value          String?                @db.NVarChar(Max)
+  updatedAt      DateTime               @default(now()) @updatedAt
+  updatedBy      String?                @db.NVarChar(200)
+  column         CustomColumnDefinition @relation(fields: [columnId], references: [id])
+
+  @@unique([columnId, registrationId])
+  @@map("custom_column_values")
 }
 
 /// App roles for Manage Admin / Manage Email access (keyed by empCode).

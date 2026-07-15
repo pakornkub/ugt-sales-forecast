@@ -42,7 +42,7 @@ router.post('/', async (req, res) => {
   try {
     await prisma.cplPrice.upsert({
       where: { month },
-      update: {},
+      update: { price: numPrice },
       create: { month, price: numPrice },
     });
     res.status(201).json({ ok: true, month, price: numPrice });

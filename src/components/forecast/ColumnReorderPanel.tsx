@@ -5,9 +5,10 @@ import { cn } from '../../lib/utils';
 import type {
   CarryDetailKey,
   CarryDetailVisibility,
+  CustomColumnDef,
   RegColumnKey,
 } from '../../types/forecast';
-import { ALL_REG_COLUMNS } from './regTableColumns';
+import { ALL_REG_COLUMNS, getRegColumnsForAppMode } from './regTableColumns';
 
 const CARRY_DETAIL_OPTIONS: Array<{ key: CarryDetailKey; label: string }> = [
   { key: 'carryIn', label: 'Carry In (TON)' },
@@ -28,6 +29,10 @@ export function ColumnReorderPanel({
   onToggleVisibility,
   carryDetailVisibility,
   onToggleCarryDetail,
+  customColumns = [],
+  customColumnVisibility,
+  onToggleCustomColumnVisibility,
+  appMode,
 }: Readonly<{
   open: boolean;
   onClose: () => void;
@@ -38,13 +43,18 @@ export function ColumnReorderPanel({
   onToggleVisibility?: (key: RegColumnKey) => void;
   carryDetailVisibility: CarryDetailVisibility;
   onToggleCarryDetail: (key: CarryDetailKey) => void;
+  customColumns?: CustomColumnDef[];
+  customColumnVisibility?: Record<string, boolean>;
+  onToggleCustomColumnVisibility?: (columnId: string) => void;
+  appMode?: 'nyl' | 'ufa' | null;
 }>) {
   const [draggedKey, setDraggedKey] = useState<RegColumnKey | null>(null);
   const [dragOverKey, setDragOverKey] = useState<RegColumnKey | null>(null);
   const [columnSearch, setColumnSearch] = useState('');
 
+  const regColumns = getRegColumnsForAppMode(appMode);
   const orderedDefs = columnOrder
-    .map(key => ALL_REG_COLUMNS.find(c => c.key === key))
+    .map(key => regColumns.find(c => c.key === key) ?? ALL_REG_COLUMNS.find(c => c.key === key))
     .filter(Boolean) as typeof ALL_REG_COLUMNS;
   const filteredDefs = useMemo(() => {
     const query = columnSearch.trim().toLowerCase();
@@ -54,6 +64,15 @@ export function ColumnReorderPanel({
       col.key.toLowerCase().includes(query)
     );
   }, [columnSearch, orderedDefs]);
+
+  const filteredCustomColumns = useMemo(() => {
+    const query = columnSearch.trim().toLowerCase();
+    if (!query) return customColumns;
+    return customColumns.filter(col =>
+      col.name.toLowerCase().includes(query) ||
+      col.type.toLowerCase().includes(query)
+    );
+  }, [columnSearch, customColumns]);
 
   useEffect(() => {
     if (!open) setColumnSearch('');
@@ -209,12 +228,55 @@ export function ColumnReorderPanel({
                     </div>
                   );
                 })}
-                {filteredDefs.length === 0 && (
+                {filteredDefs.length === 0 && filteredCustomColumns.length === 0 && (
                   <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-10 text-center text-xs text-slate-400">
                     No matching columns
                   </div>
                 )}
               </section>
+
+              {customColumns.length > 0 && (
+                <section className="space-y-1.5 border-t border-slate-100 p-3">
+                  <p className="px-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Custom columns
+                  </p>
+                  {filteredCustomColumns.map(column => {
+                    const isVisible = customColumnVisibility
+                      ? customColumnVisibility[column.id] !== false
+                      : true;
+                    return (
+                      <label
+                        key={column.id}
+                        className={cn(
+                          'flex cursor-pointer items-center gap-2.5 rounded-xl border px-3 py-2.5 transition-all',
+                          isVisible
+                            ? 'border-slate-200/80 bg-white hover:border-slate-300 hover:shadow-sm'
+                            : 'border-slate-100 bg-slate-50/60 opacity-75 hover:border-slate-200',
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isVisible}
+                          onChange={() => onToggleCustomColumnVisibility?.(column.id)}
+                          className={checkboxClass}
+                          aria-label={`Toggle ${column.name}`}
+                        />
+                        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-800">
+                          {column.name}
+                        </span>
+                        <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">
+                          {column.type}
+                        </span>
+                      </label>
+                    );
+                  })}
+                  {filteredCustomColumns.length === 0 && columnSearch.trim() && (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-6 text-center text-xs text-slate-400">
+                      No matching custom columns
+                    </div>
+                  )}
+                </section>
+              )}
             </div>
 
             <footer className="shrink-0 border-t border-slate-100 bg-slate-50/80 p-4">

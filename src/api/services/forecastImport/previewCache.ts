@@ -21,6 +21,8 @@ export type CachedPreviewPayload = {
   versionedHasAmountColumns?: boolean;
   amountMismatchCount: number;
   autoCreateCandidates?: AutoCreateRegistrationPackage[];
+  spreadByRegistrationId?: Record<string, string>;
+  pricingPolicyByRegistrationId?: Record<string, string>;
   expiresAt: number;
 };
 

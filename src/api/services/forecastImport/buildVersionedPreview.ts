@@ -24,11 +24,16 @@ import {
   diagnoseUnmatchedRows,
   findActualSummaries,
   findRegistrationMatches,
+  isExcludedImportPlantKey,
+  parseExcelKey,
 } from './matching';
+import { isOutOfAppModeImportKey } from '../../../config/appMode';
 import {
   buildVersionedAutoCreatePackage,
   collectAutoCreateCandidates,
 } from './autoCreateRegistrations';
+import { isKnownPricingPolicy } from '../../../lib/pricingPolicy';
+import { buildPricingPolicyByRegistrationId, buildSpreadByRegistrationId } from './importSpread';
 import { storePreviewCache } from './previewCache';
 import type {
   AmountMismatchWarning,
@@ -88,6 +93,8 @@ export type VersionedPreviewResult = {
     groupedDuplicateKeys: number;
     skippedKeyGroups: number;
     amountMismatchWarnings: number;
+    pricingPoliciesDetected?: number;
+    unknownPricingPolicies?: number;
     excelTotalQty?: number;
     excelTotalAmount?: number;
     importTotalQty?: number;
@@ -112,7 +119,7 @@ export type VersionedPreviewResult = {
     sourceRows: number[];
     sourceSheet: string;
     reason: string;
-    reasonCode: 'invalid_forecast_number';
+    reasonCode: 'invalid_forecast_number' | 'excluded_plant';
   }>;
   unmatchedRows: UnmatchedRowDiagnostic[];
   duplicateRegistrationMatches: Array<{
@@ -260,30 +267,70 @@ export async function buildVersionedImportPreview(
     }));
 
   const skippedKeyGroups = [...excelGroups.values()]
-    .filter(group => group.hasInvalidNumber)
-    .map(group => {
-      const invalids = invalidNumericValues.filter(
-        item => item.excelKeyForNoRegist === group.keyNoRegist
-      );
-      const reason = invalids.length > 0
-        ? invalids
-          .map(item => `Invalid number in ${item.header} (col ${item.column}): "${unknownToDisplayString(item.value)}"`)
-          .join('; ')
-        : 'Invalid forecast number in one or more month columns';
+    .flatMap(group => {
       const primary = primarySourceEntry(group);
-      return {
-        excelKeyForNoRegist: group.keyNoRegist,
-        sourceRows: group.sourceRows,
-        sourceSheet: primary.sourceSheet,
-        reason,
-        reasonCode: 'invalid_forecast_number' as const,
-      };
+      const items: Array<{
+        excelKeyForNoRegist: string;
+        sourceRows: number[];
+        sourceSheet: string;
+        reason: string;
+        reasonCode: 'invalid_forecast_number' | 'excluded_plant';
+      }> = [];
+
+      if (isExcludedImportPlantKey(group.keyNoRegist)) {
+        items.push({
+          excelKeyForNoRegist: group.keyNoRegist,
+          sourceRows: group.sourceRows,
+          sourceSheet: primary.sourceSheet,
+          reason: `Plant ${parseExcelKey(group.keyNoRegist).plant || 'excluded'} is excluded from import`,
+          reasonCode: 'excluded_plant',
+        });
+      } else if (isOutOfAppModeImportKey(group.keyNoRegist, group.businessUnit)) {
+        items.push({
+          excelKeyForNoRegist: group.keyNoRegist,
+          sourceRows: group.sourceRows,
+          sourceSheet: primary.sourceSheet,
+          reason: 'Business unit is outside this application mode',
+          reasonCode: 'excluded_plant',
+        });
+      }
+
+      if (group.hasInvalidNumber) {
+        const invalids = invalidNumericValues.filter(
+          item => item.excelKeyForNoRegist === group.keyNoRegist
+        );
+        const reason = invalids.length > 0
+          ? invalids
+            .map(item => `Invalid number in ${item.header} (col ${item.column}): "${unknownToDisplayString(item.value)}"`)
+            .join('; ')
+          : 'Invalid forecast number in one or more month columns';
+        items.push({
+          excelKeyForNoRegist: group.keyNoRegist,
+          sourceRows: group.sourceRows,
+          sourceSheet: primary.sourceSheet,
+          reason,
+          reasonCode: 'invalid_forecast_number',
+        });
+      }
+
+      return items;
     });
+  const excludedPlantKeys = new Set(
+    skippedKeyGroups
+      .filter(item => item.reasonCode === 'excluded_plant')
+      .map(item => item.excelKeyForNoRegist)
+  );
+  const importableExcelKeys = [...excelGroups.keys()].filter(key => !excludedPlantKeys.has(key));
 
   const [registrationMatches, actualSummaries] = await Promise.all([
-    findRegistrationMatches([...excelGroups.keys()]),
-    findActualSummaries([...excelGroups.keys()], forecastColumns),
+    findRegistrationMatches(importableExcelKeys),
+    findActualSummaries(importableExcelKeys, forecastColumns),
   ]);
+  const spreadByRegistrationId = buildSpreadByRegistrationId(excelGroups, registrationMatches);
+  const pricingPolicyByRegistrationId = buildPricingPolicyByRegistrationId(
+    excelGroups,
+    registrationMatches,
+  );
 
   const unmatchedRows: UnmatchedRowDiagnostic[] = [];
   const duplicateRegistrationMatches: Array<{
@@ -297,6 +344,8 @@ export async function buildVersionedImportPreview(
   const rawUnmatchedRows: Array<{ sourceSheet: string; sourceRow: number; excelKeyForNoRegist: string }> = [];
 
   for (const group of excelGroups.values()) {
+    if (excludedPlantKeys.has(group.keyNoRegist)) continue;
+
     const primary = primarySourceEntry(group);
     const sourceRow = primary.sourceRow;
     const excelKeyForNoRegist = group.keyNoRegist;
@@ -537,6 +586,10 @@ export async function buildVersionedImportPreview(
       (sum, candidate) => sum + candidate.pendingForecastRecords.reduce((inner, record) => inner + record.amountFcst, 0),
       0
     );
+  const pricingPoliciesDetected = [...excelGroups.values()].filter(group => group.pricingPolicy).length;
+  const unknownPricingPolicies = [...excelGroups.values()].filter(
+    group => group.pricingPolicy && !isKnownPricingPolicy(group.pricingPolicy)
+  ).length;
 
   const cacheEntry = storePreviewCache({
     importMode: 'versioned',
@@ -547,6 +600,8 @@ export async function buildVersionedImportPreview(
     versionedHasAmountColumns: hasAmountColumns,
     amountMismatchCount: amountMismatchWarnings.length,
     autoCreateCandidates,
+    spreadByRegistrationId,
+    pricingPolicyByRegistrationId,
   });
 
   return {
@@ -582,6 +637,8 @@ export async function buildVersionedImportPreview(
       groupedDuplicateKeys: duplicateExcelKeys.length,
       skippedKeyGroups: skippedKeyGroups.length,
       amountMismatchWarnings: amountMismatchWarnings.length,
+      pricingPoliciesDetected,
+      unknownPricingPolicies,
       excelTotalQty,
       excelTotalAmount,
       importTotalQty,

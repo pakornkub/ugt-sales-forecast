@@ -1,14 +1,14 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { RegColumnKey } from '../../types/forecast';
 import {
   DEFAULT_COLUMN_ORDER,
-  DEFAULT_VISIBLE_COLUMN_KEYS,
+  getDefaultVisibleColumnKeys,
   getOrderedColumns,
   reorderColumns,
   type OrderedRegColumn,
 } from './regTableColumns';
 
-export function useRegTableLayout() {
+export function useRegTableLayout(appMode?: 'nyl' | 'ufa' | null) {
   const [columnOrder, setColumnOrder] = useState<RegColumnKey[]>(DEFAULT_COLUMN_ORDER);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draggedColumnKey, setDraggedColumnKey] = useState<RegColumnKey | null>(null);
@@ -18,14 +18,32 @@ export function useRegTableLayout() {
         (acc, key) => ({ ...acc, [key]: false }),
         {} as Record<RegColumnKey, boolean>
       );
-      DEFAULT_VISIBLE_COLUMN_KEYS.forEach(key => {
+      getDefaultVisibleColumnKeys(appMode).forEach(key => {
         initialVisibility[key] = true;
       });
       return initialVisibility;
     }
   );
 
-  const orderedColumns = useMemo(() => getOrderedColumns(columnOrder), [columnOrder]);
+  useEffect(() => {
+    if (appMode !== 'ufa') return;
+    setColumnVisibility(prev => {
+      const next = { ...prev };
+      let changed = false;
+      for (const key of getDefaultVisibleColumnKeys('ufa')) {
+        if (!next[key]) {
+          next[key] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [appMode]);
+
+  const orderedColumns = useMemo(
+    () => getOrderedColumns(columnOrder, appMode),
+    [columnOrder, appMode]
+  );
 
   const resetColumnOrder = useCallback(() => {
     setColumnOrder(DEFAULT_COLUMN_ORDER);
@@ -63,4 +81,4 @@ export function useRegTableLayout() {
   };
 }
 
-export type { OrderedRegColumn }; 
+export type { OrderedRegColumn };

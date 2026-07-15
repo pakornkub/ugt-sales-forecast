@@ -192,11 +192,12 @@ export async function resolveManagedRegistrationUpdate(
   }
   if (body.priceFormula !== undefined) patchData.priceFormula = text(body.priceFormula) || 'CPL';
   if (body.spread !== undefined) {
-    const spreadValue = Number(body.spread);
-    if (!Number.isFinite(spreadValue) || spreadValue < 0) {
-      throw Object.assign(new Error('Spread must be a non-negative number'), { code: 'VALIDATION' });
+    if (body.spread === null) {
+      patchData.spread = null;
+    } else {
+      const textValue = String(body.spread).trim();
+      patchData.spread = textValue === '' ? null : textValue;
     }
-    patchData.spread = spreadValue;
   }
 
   const codes = {

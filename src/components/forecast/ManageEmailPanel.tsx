@@ -190,7 +190,7 @@ export function ManageEmailPanel({ open, onClose }: ManageEmailPanelProps) {
                 <div>
                   <h2 className="text-sm font-bold tracking-tight text-slate-900">Manage Email</h2>
                   <p className="text-[11px] text-slate-500">
-                    Combined CC list for forecast change notifications
+                    Combined CC list for forecast commits and Diff Plan alerts
                   </p>
                 </div>
               </div>
@@ -223,7 +223,7 @@ export function ManageEmailPanel({ open, onClose }: ManageEmailPanelProps) {
                   </span>
                 </div>
                 <p className="mb-2 text-[11px] text-slate-400">
-                  One combined email (all changes) is sent to ticked recipients when you commit.
+                  Ticked recipients receive forecast commit emails and Diff Plan breach alerts.
                   Default notify is on for Taksaporn Poldongnok only — use the bell to enable others.
                 </p>
                 <div className="space-y-1.5">

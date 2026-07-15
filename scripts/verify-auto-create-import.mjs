@@ -7,7 +7,7 @@ import {
   EXCEL_IMPORT_CREATED_BY,
   resolveOrCreateImportRegistrations,
 } from '../src/api/services/forecastImport/autoCreateRegistrations.ts';
-import { normalizeCrmCategoryFields, isLikelyCompanyName } from '../src/api/services/registrationCategory.ts';
+import { normalizeCrmCategoryFields, normalizeExcelImportCategoryFields, isLikelyCompanyName } from '../src/api/services/registrationCategory.ts';
 import { buildVersionedImportPreview } from '../src/api/services/forecastImport/buildVersionedPreview.ts';
 import { confirmVersionedImport } from '../src/api/services/forecastImport/confirmImport.ts';
 import { getPreviewCache } from '../src/api/services/forecastImport/previewCache.ts';
@@ -88,19 +88,22 @@ function assert(condition, message) {
   assert(validKeyData.soldToName === null, 'valid key should not store Excel soldTo name at create');
   console.log('OK buildRegistrationCreateData separates codes and names');
 
-  const comboCats = normalizeCrmCategoryFields(
+  const comboCats = normalizeExcelImportCategoryFields(
     'INJ_Combination Switch',
     'Combination Switch',
     'TOYO DENSO',
   );
-  assert(comboCats.process === 'Injection', 'INJ process should map to Injection Cat1');
-  assert(comboCats.application === 'INJ_Combination Switch', 'INJ code should move to Cat2/application');
-  assert(comboCats.subApp === 'TOYO DENSO', 'sub-app should stay in Cat3');
-  const doorCats = normalizeCrmCategoryFields('INJ_Door System', 'Cap lock header', null);
-  assert(doorCats.process === 'Injection' && doorCats.application === 'INJ_Door System', 'door system shift');
-  assert(doorCats.subApp === 'Cap lock header', 'application fallback to Cat3 when no sub-app');
-  const stableCats = normalizeCrmCategoryFields('Injection', 'MF', 'Fishing net');
-  assert(stableCats.process === 'Injection' && stableCats.application === 'MF' && stableCats.subApp === 'Fishing net', 'already aligned rows unchanged');
+  assert(comboCats.process === 'INJ_Combination Switch', 'Process column maps to Cat1 as-is');
+  assert(comboCats.application === 'Combination Switch', 'Application column maps to Cat2');
+  assert(comboCats.subApp === 'TOYO DENSO', 'Sub-App column maps to Cat3');
+  const doorCats = normalizeExcelImportCategoryFields('INJ_Door System', 'Cap lock header', null);
+  assert(doorCats.process === 'INJ_Door System', 'Process column maps to Cat1');
+  assert(doorCats.application === 'Cap lock header', 'Application column maps to Cat2');
+  assert(doorCats.subApp === null, 'empty Sub-App stays null');
+  const stableCats = normalizeExcelImportCategoryFields('Injection', 'MF', 'Fishing net');
+  assert(stableCats.process === 'Injection' && stableCats.application === 'MF' && stableCats.subApp === 'Fishing net', 'standard Excel row unchanged');
+  const emptyCats = normalizeExcelImportCategoryFields('', null, '');
+  assert(emptyCats.process === null && emptyCats.application === null && emptyCats.subApp === null, 'empty Excel cells become null');
   const comboImport = buildRegistrationCreateData({
     excelKeyForNoRegist: '1/2/3/1104/400212/Off',
     sourceSheet: 'Polymer',
@@ -124,12 +127,18 @@ function assert(condition, message) {
     hasImportedPrice: false,
     pendingForecastRecords: [],
   });
-  assert(comboImport.process === 'Injection' && comboImport.application === 'INJ_Combination Switch', 'import create data category normalize');
+  assert(comboImport.process === 'INJ_Combination Switch' && comboImport.application === 'Combination Switch', 'import create data uses Excel column mapping');
   assert(comboImport.subApp === 'TOYO DENSO', 'import create data sub-app');
   assert(isLikelyCompanyName('AMCOR FLEXIBLES (NEW ZEALAND) LIMITED'), 'company detect');
-  const noCompanySub = normalizeCrmCategoryFields('INJ_2W', 'AMCOR FLEXIBLES (NEW ZEALAND) LIMITED', null);
+  const noCompanySub = normalizeExcelImportCategoryFields('Injection', 'INJ_2W', 'AMCOR FLEXIBLES (NEW ZEALAND) LIMITED');
   assert(noCompanySub.subApp === null, 'company name must not fall into Cat3');
-  console.log('OK normalizeCrmCategoryFields');
+  const mbPolymer = normalizeExcelImportCategoryFields('MB Polymer', 'MB Polymer', 'AJ');
+  assert(mbPolymer.process === 'MB Polymer', 'Process column value kept in Cat1');
+  assert(mbPolymer.application === 'MB Polymer', 'Application column value kept in Cat2');
+  assert(mbPolymer.subApp === 'AJ', 'Sub-App column maps to Cat3');
+  const crmShift = normalizeCrmCategoryFields('INJ_Door System', 'Cap lock header', null);
+  assert(crmShift.application === 'INJ_Door System', 'CRM repair still shifts INJ_ codes to Cat2');
+  console.log('OK normalizeExcelImportCategoryFields');
 
   const partialKeyData = buildRegistrationCreateData({
     excelKeyForNoRegist: '///1110/401098/On',

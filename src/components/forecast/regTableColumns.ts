@@ -2,6 +2,8 @@ import type { RegColumnKey } from '../../types/forecast';
 import { REG_COLUMN_KEYS } from '../../types/forecast';
 
 export const REG_COLUMN_WIDTH = 120;
+export const CUSTOM_COLUMN_WIDTH = 120;
+export const CUSTOM_COLUMN_ADD_BUTTON_WIDTH = 40;
 export const MONTH_COLUMN_WIDTH = 110;
 export const FORMULA_COLUMN_WIDTH = 130;
 export const SPREAD_COLUMN_WIDTH = 90;
@@ -68,24 +70,43 @@ export const ALL_REG_COLUMNS: RegColumnDef[] = [
   { key: 'endUserExportControl', label: 'End User Export Control' },
   { key: 'endUserName', label: 'End User Name' },
   { key: 'productName', label: 'Product Name' },
+  { key: 'productNamePud', label: 'Product Name (PUD)' },
+  { key: 'gradeUfa', label: 'Grade(UFA)' },
+  { key: 'gradeSap', label: 'Grade(SAP)' },
   { key: 'column1', label: 'Column 1' },
   { key: 'priceFormula', label: 'Formula' },
   { key: 'spread', label: 'Spread' },
 ];
 
+const UFA_ONLY_COLUMN_KEYS = new Set<RegColumnKey>([
+  'productNamePud',
+  'gradeUfa',
+  'gradeSap',
+]);
+
+export function getRegColumnsForAppMode(appMode?: 'nyl' | 'ufa' | null): RegColumnDef[] {
+  if (appMode === 'ufa') return ALL_REG_COLUMNS;
+  return ALL_REG_COLUMNS.filter(col => !UFA_ONLY_COLUMN_KEYS.has(col.key));
+}
+
 const columnDefMap = Object.fromEntries(
   ALL_REG_COLUMNS.map(col => [col.key, col])
 ) as Record<RegColumnKey, RegColumnDef>;
 
+const baseColumnOrder = REG_COLUMN_KEYS.filter(
+  key => key !== 'priceFormula' && key !== 'spread',
+);
+const carryOutLoadingIndex = baseColumnOrder.indexOf('carryOutLoading');
+
 export const DEFAULT_COLUMN_ORDER: RegColumnKey[] = [
+  ...baseColumnOrder.slice(0, carryOutLoadingIndex + 1),
   'priceFormula',
   'spread',
-  ...REG_COLUMN_KEYS.filter(key => key !== 'priceFormula' && key !== 'spread'),
+  ...baseColumnOrder.slice(carryOutLoadingIndex + 1),
 ];
+
 // Limit default visible columns to an approved, sensible subset
 export const DEFAULT_VISIBLE_COLUMN_KEYS: RegColumnKey[] = [
-  'priceFormula',
-  'spread',
   'ownerName',
   'businessUnit',
   'registrationTopic',
@@ -102,6 +123,8 @@ export const DEFAULT_VISIBLE_COLUMN_KEYS: RegColumnKey[] = [
   'carryOutETD',
   'carryInLoading',
   'carryOutLoading',
+  'priceFormula',
+  'spread',
   'plantName',
   'countryName',
   'shipTo_name',
@@ -110,13 +133,31 @@ export const DEFAULT_VISIBLE_COLUMN_KEYS: RegColumnKey[] = [
   'productName',
 ];
 
+export function getDefaultVisibleColumnKeys(appMode?: 'nyl' | 'ufa' | null): RegColumnKey[] {
+  if (appMode !== 'ufa') return DEFAULT_VISIBLE_COLUMN_KEYS;
+  const withUfa: RegColumnKey[] = DEFAULT_VISIBLE_COLUMN_KEYS.filter(key => key !== 'productName');
+  const insertAt = withUfa.indexOf('partName');
+  const ufaCols: RegColumnKey[] = ['productNamePud', 'gradeUfa', 'gradeSap'];
+  if (insertAt >= 0) {
+    withUfa.splice(insertAt + 1, 0, ...ufaCols);
+  } else {
+    withUfa.push(...ufaCols);
+  }
+  return withUfa;
+}
+
 export interface OrderedRegColumn extends RegColumnDef {
   width: number;
 }
 
-export function getOrderedColumns(columnOrder: RegColumnKey[]): OrderedRegColumn[] {
+export function getOrderedColumns(
+  columnOrder: RegColumnKey[],
+  appMode?: 'nyl' | 'ufa' | null
+): OrderedRegColumn[] {
+  const defs = getRegColumnsForAppMode(appMode);
+  const map = Object.fromEntries(defs.map(col => [col.key, col])) as Record<RegColumnKey, RegColumnDef>;
   return columnOrder
-    .map(key => columnDefMap[key])
+    .map(key => map[key] ?? columnDefMap[key])
     .filter((col): col is RegColumnDef => Boolean(col))
     .map(col => ({
       ...col,
@@ -130,6 +171,11 @@ export function getOrderedColumns(columnOrder: RegColumnKey[]): OrderedRegColumn
 
 export function getRegColumnsTotalWidth(columns: OrderedRegColumn[]): number {
   return columns.reduce((sum, col) => sum + col.width, 0);
+}
+
+export function getCustomColumnsTotalWidth(columnCount: number, includeAddButton = false): number {
+  if (columnCount === 0 && !includeAddButton) return 0;
+  return (columnCount * CUSTOM_COLUMN_WIDTH) + (includeAddButton ? CUSTOM_COLUMN_ADD_BUTTON_WIDTH : 0);
 }
 
 export function reorderColumns(

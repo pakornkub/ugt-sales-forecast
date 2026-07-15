@@ -2,22 +2,30 @@ import * as XLSX from 'xlsx';
 import {
   KEY_HEADER,
   SKIP_SHEET_NAMES,
-  VERSIONED_PREFERRED_SHEET_NAMES,
 } from './constants';
+import { getPreferredVersionedSheetNames } from '../../../config/appMode';
 import {
   buildExtendedForecastColumns,
   buildSyntheticImportKey,
   findHeaderIndex,
+  findPricingPolicyColumnIndex,
+  findSpreadColumnIndex,
   firstDayOfMonthPeriod,
   firstValue,
   forecastColumnSignature,
   forecastNumberInvalidReason,
   getOnOffFromKey,
+  isImportKeyHeader,
   normalizeHeader,
   normalizeKey,
   parseForecastMonthColumn,
   parseForecastNumber,
+  parsePricingPolicyCell,
+  parseSpreadCell,
+  recomputeAggregatedPrices,
+  registrationTopicFromImportKey,
   resolveImportMetadataColumns,
+  toImportKeyForNoRegist,
 } from './excelUtils';
 import type {
   ExcelForecastGroup,
@@ -50,6 +58,13 @@ function mergeExcelGroups(existing: ExcelForecastGroup, incoming: ExcelForecastG
   existing.subApplication = existing.subApplication ?? incoming.subApplication;
   existing.owner = existing.owner ?? incoming.owner;
   existing.businessUnit = existing.businessUnit ?? incoming.businessUnit;
+  existing.productName = existing.productName ?? incoming.productName;
+  existing.gradeUfa = existing.gradeUfa ?? incoming.gradeUfa;
+  existing.gradeSap = existing.gradeSap ?? incoming.gradeSap;
+  existing.materialDescription = existing.materialDescription ?? incoming.materialDescription;
+  existing.registrationTopic = existing.registrationTopic ?? incoming.registrationTopic;
+  existing.spread = existing.spread ?? incoming.spread;
+  existing.pricingPolicy = existing.pricingPolicy ?? incoming.pricingPolicy;
 }
 
 export type VersionedSheetParseResult = {
@@ -100,7 +115,7 @@ function sheetHasVersionedImportLayout(sheet: XLSX.WorkSheet) {
     raw: true,
   });
   const header = rows[0] ?? [];
-  if (normalizeHeader(header[0]) !== KEY_HEADER) return false;
+  if (!isImportKeyHeader(header[0])) return false;
   const qtyColumns = header.filter((value, index) => parseForecastMonthColumn(value, index) !== null);
   return qtyColumns.length > 0;
 }
@@ -109,7 +124,7 @@ export function resolveVersionedImportSheets(workbook: XLSX.WorkBook) {
   const matched: Array<{ sheetName: string; sheet: XLSX.WorkSheet }> = [];
   const seen = new Set<string>();
 
-  for (const name of VERSIONED_PREFERRED_SHEET_NAMES) {
+  for (const name of getPreferredVersionedSheetNames()) {
     const sheet = workbook.Sheets[name];
     if (sheet && sheetHasVersionedImportLayout(sheet) && !seen.has(name)) {
       matched.push({ sheetName: name, sheet });
@@ -141,6 +156,37 @@ function buildVersionedForecastColumns(header: unknown[]): {
   return { columns, hasPriceColumns, hasAmountColumns };
 }
 
+function emptyExcelGroup(key: string, forecastColumns: VersionedForecastColumn[]): ExcelForecastGroup {
+  return {
+    keyNoRegist: key,
+    sourceRows: [],
+    sourceSheetRows: [],
+    country: null,
+    soldTo: null,
+    shipTo: null,
+    enduser: null,
+    plant: null,
+    materialCode: null,
+    onOff: null,
+    process: null,
+    application: null,
+    subApplication: null,
+    owner: null,
+    businessUnit: null,
+    productName: null,
+    gradeUfa: null,
+    gradeSap: null,
+    materialDescription: null,
+    registrationTopic: null,
+    forecastValues: forecastColumns.map(() => 0),
+    priceValues: forecastColumns.map(() => 0),
+    amountValues: forecastColumns.map(() => 0),
+    spread: null,
+    pricingPolicy: null,
+    hasInvalidNumber: false,
+  };
+}
+
 export function parseVersionedImportSheet(sheetName: string, sheet: XLSX.WorkSheet): VersionedSheetParseResult {
   const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
     header: 1,
@@ -159,8 +205,11 @@ export function parseVersionedImportSheet(sheetName: string, sheet: XLSX.WorkShe
   const { columns: forecastColumns, hasPriceColumns, hasAmountColumns } = buildVersionedForecastColumns(header);
   const businessUnitColumnIndex = findHeaderIndex(header, ['BU', 'Business Unit', 'BusinessUnit']);
   const metadataColumns = resolveImportMetadataColumns(header);
+  const spreadColumnIndex = findSpreadColumnIndex(header);
+  const spreadHeader = spreadColumnIndex >= 0 ? normalizeHeader(header[spreadColumnIndex]) : '';
+  const pricingPolicyColumnIndex = findPricingPolicyColumnIndex(header);
 
-  if (normalizeHeader(header[0]) !== KEY_HEADER) {
+  if (!isImportKeyHeader(header[0])) {
     headerErrors.push({
       sourceSheet: sheetName,
       column: 'A',
@@ -173,7 +222,7 @@ export function parseVersionedImportSheet(sheetName: string, sheet: XLSX.WorkShe
     headerErrors.push({
       sourceSheet: sheetName,
       column: '-',
-      expected: 'At least one forecast month header in MMM-YY format',
+      expected: "At least one forecast month header (MMM-YY or MMM'YY)",
       actual: 'No forecast month columns found',
     });
   }
@@ -204,52 +253,79 @@ export function parseVersionedImportSheet(sheetName: string, sheet: XLSX.WorkShe
 
   dataRows.forEach((row, index) => {
     const sourceRow = index + 2;
-    const rawKey = normalizeKey(row[0]);
-    const keyMissing = !rawKey;
-    const key = rawKey || buildSyntheticImportKey(sheetName, sourceRow);
+    const rawKeyFromCell = normalizeKey(row[0]);
+    const keyMissing = !rawKeyFromCell;
+    const normalizedKey = toImportKeyForNoRegist(rawKeyFromCell);
+    const key = normalizedKey || buildSyntheticImportKey(sheetName, sourceRow);
     if (keyMissing) {
       missingKeyRows.push({ sourceSheet: sheetName, sourceRow });
     }
 
-    const group = excelGroups.get(key) ?? {
-      keyNoRegist: key,
-      sourceRows: [],
-      sourceSheetRows: [],
-      country: null,
-      soldTo: null,
-      shipTo: null,
-      enduser: null,
-      plant: null,
-      materialCode: null,
-      onOff: null,
-      process: null,
-      application: null,
-      subApplication: null,
-      owner: null,
-      businessUnit: null,
-      forecastValues: forecastColumns.map(() => 0),
-      priceValues: forecastColumns.map(() => 0),
-      amountValues: forecastColumns.map(() => 0),
-      hasInvalidNumber: false,
-    };
+    const group = excelGroups.get(key) ?? emptyExcelGroup(key, forecastColumns);
 
     group.sourceRows.push(sourceRow);
     group.sourceSheetRows.push({ sourceSheet: sheetName, sourceRow });
+
+    const plantFromName = metadataColumns.plantName >= 0
+      ? firstValue(null, row[metadataColumns.plantName])
+      : null;
+    const plantFromCode = metadataColumns.plantCode >= 0
+      ? firstValue(null, row[metadataColumns.plantCode])
+      : null;
+
     group.country = firstValue(group.country, row[metadataColumns.country]);
     group.soldTo = firstValue(group.soldTo, row[metadataColumns.soldTo]);
     group.shipTo = firstValue(group.shipTo, row[metadataColumns.shipTo]);
     group.enduser = firstValue(group.enduser, row[metadataColumns.enduser]);
-    group.plant = firstValue(group.plant, row[metadataColumns.plantCode]);
+    // Prefer plant display name; fall back to plant code cell (polymer/cp layout).
+    group.plant = group.plant ?? plantFromName ?? plantFromCode
+      ?? firstValue(null, row[metadataColumns.plantCode]);
     group.materialCode = firstValue(group.materialCode, row[metadataColumns.materialCode]);
     group.onOff = firstValue(group.onOff, row[metadataColumns.onOff]) ?? getOnOffFromKey(key);
     group.process = firstValue(group.process, row[metadataColumns.process]);
     group.application = firstValue(group.application, row[metadataColumns.application]);
     group.subApplication = firstValue(group.subApplication, row[metadataColumns.subApplication]);
-    group.owner = firstValue(group.owner, row[metadataColumns.owner]);
+    group.owner = firstValue(group.owner, row[metadataColumns.owner])
+      ?? firstValue(null, row[metadataColumns.pic]);
     group.businessUnit = firstValue(
       group.businessUnit,
       businessUnitColumnIndex >= 0 ? row[businessUnitColumnIndex] : null
     );
+    group.productName = firstValue(group.productName, row[metadataColumns.productName]);
+    group.gradeUfa = firstValue(group.gradeUfa, row[metadataColumns.gradeUfa]);
+    group.gradeSap = firstValue(group.gradeSap, row[metadataColumns.gradeSap]);
+    group.materialDescription = firstValue(
+      group.materialDescription,
+      row[metadataColumns.materialDescription]
+    );
+    group.registrationTopic = firstValue(
+      group.registrationTopic,
+      row[metadataColumns.registrationTopic]
+    ) ?? registrationTopicFromImportKey(rawKeyFromCell);
+
+    if (spreadColumnIndex >= 0) {
+      const rawSpread = row[spreadColumnIndex];
+      if (group.spread === null) {
+        const spreadParsed = parseSpreadCell(rawSpread);
+        if (!spreadParsed.ok) {
+          pushInvalid(
+            sourceRow,
+            key,
+            XLSX.utils.encode_col(spreadColumnIndex),
+            spreadHeader,
+            rawSpread,
+          );
+        } else {
+          group.spread = spreadParsed.value;
+        }
+      }
+    }
+    if (pricingPolicyColumnIndex >= 0 && group.pricingPolicy === null) {
+      const policyParsed = parsePricingPolicyCell(row[pricingPolicyColumnIndex]);
+      if (policyParsed.ok) {
+        group.pricingPolicy = policyParsed.value;
+      }
+    }
 
     forecastColumns.forEach((forecastColumn, forecastIndex) => {
       const qtyRaw = row[forecastColumn.qtyIndex];
@@ -283,6 +359,10 @@ export function parseVersionedImportSheet(sheetName: string, sheet: XLSX.WorkShe
 
     excelGroups.set(key, group);
   });
+
+  for (const group of excelGroups.values()) {
+    recomputeAggregatedPrices(group);
+  }
 
   return {
     sheetName,
@@ -368,6 +448,10 @@ export function mergeVersionedSheetResults(sheetResults: VersionedSheetParseResu
 
       mergeExcelGroups(existing, group);
     }
+  }
+
+  for (const group of excelGroups.values()) {
+    recomputeAggregatedPrices(group);
   }
 
   return {

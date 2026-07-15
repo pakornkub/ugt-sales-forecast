@@ -1,6 +1,9 @@
 import type {
   ActualValue,
   CPLPrice,
+  CustomColumnDef,
+  CustomColumnType,
+  CustomColumnValue,
   ForecastSummary,
   ForecastSummaryRequest,
   ForecastValue,
@@ -119,6 +122,8 @@ export interface CurrentForecastImportPreview {
     skippedKeyGroups?: number;
     hasPriceColumns?: boolean;
     hasAmountColumns?: boolean;
+    pricingPoliciesDetected?: number;
+    unknownPricingPolicies?: number;
     excelTotalQty?: number;
     excelTotalAmount?: number;
     importTotalQty?: number;
@@ -180,7 +185,7 @@ export interface CurrentForecastImportPreview {
     sourceRows: number[];
     sourceSheet?: string;
     reason: string;
-    reasonCode: 'invalid_forecast_number';
+    reasonCode: 'invalid_forecast_number' | 'excluded_plant';
   }>;
   existingDbConflicts: Array<{
     sourceRow: number;
@@ -285,8 +290,8 @@ export function isVersionedImportPreview(
   return 'expectedColumns' in preview && Array.isArray(preview.expectedColumns) && 'previewId' in preview;
 }
 
-export const LEGACY_FORECAST_IMPORT_CONTRACT_VERSION = 12;
-export const VERSIONED_FORECAST_IMPORT_CONTRACT_VERSION = 4;
+export const LEGACY_FORECAST_IMPORT_CONTRACT_VERSION = 13;
+export const VERSIONED_FORECAST_IMPORT_CONTRACT_VERSION = 7;
 
 export interface OverplanConfig {
   id: string;
@@ -402,6 +407,13 @@ export interface OverplanEvaluateRequest {
   pageSize?: number;
   filters?: Record<string, string[]>;
 }
+
+export type AppConfig = {
+  appMode: 'nyl' | 'ufa';
+  allowedBusinessUnits: string[];
+  displayName: string;
+  basePath: string;
+};
 
 export class ApiError extends Error {
   constructor(
@@ -611,6 +623,10 @@ async function runForecastListProgressive(
 // ── Registrations ────────────────────────────────────────────────────────────
 
 export const api = {
+  appConfig: {
+    get: (): Promise<AppConfig> => request('/api/app-config'),
+  },
+
   auth: {
     me: async (): Promise<AuthMeResponse> => {
       const res = await fetch(withAppBase('/auth/me'));
@@ -668,10 +684,19 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify(registration),
       }),
-    updateSpread: (registrationId: string, spread: number, updatedBy?: string): Promise<{ registrationId: string; spread: number }> =>
+    updateSpread: (registrationId: string, spread: string | null, updatedBy?: string): Promise<{ registrationId: string; spread: string | null }> =>
       request(`/api/registrations/${encodeURIComponent(registrationId)}/spread`, {
         method: 'PATCH',
         body: JSON.stringify({ spread, updatedBy }),
+      }),
+    updatePriceSettings: (
+      registrationId: string,
+      settings: { spread?: string | null; pricingPolicy?: string | null },
+      updatedBy?: string,
+    ): Promise<{ registrationId: string; spread: string | null; pricingPolicy: string | null }> =>
+      request(`/api/registrations/${encodeURIComponent(registrationId)}/price-settings`, {
+        method: 'PATCH',
+        body: JSON.stringify({ ...settings, updatedBy }),
       }),
     remove: (registrationId: string): Promise<{ ok: boolean }> =>
       request(`/api/registrations/${encodeURIComponent(registrationId)}`, {
@@ -791,6 +816,15 @@ export const api = {
         body: JSON.stringify(params),
         signal,
       }),
+
+    copyVersion: (
+      sourceVersion: string,
+      targetVersion: string
+    ): Promise<{ ok: boolean; copied: number; sourceVersion: string; targetVersion: string }> =>
+      request('/api/forecast/copy-version', {
+        method: 'POST',
+        body: JSON.stringify({ sourceVersion, targetVersion }),
+      }),
   },
 
   // ── Actuals ───────────────────────────────────────────────────────────────
@@ -824,6 +858,17 @@ export const api = {
       if (Object.keys(filters).length > 0) qs.set('filters', JSON.stringify(filters));
       const query = qs.toString();
       return request(`/api/actuals${query ? '?' + query : ''}`, { signal });
+    },
+    latestPrice: (
+      registrationIds: string[],
+      signal?: AbortSignal,
+    ): Promise<Array<{ registrationId: string; price: number }>> => {
+      if (registrationIds.length === 0) return Promise.resolve([]);
+      return request('/api/actuals/latest-price', {
+        method: 'POST',
+        body: JSON.stringify({ registrationIds }),
+        signal,
+      });
     },
   },
 
@@ -1146,5 +1191,55 @@ export const api = {
       }),
     removeRole: (empCode: string): Promise<{ assignments: AppRoleAssignment[] }> =>
       request(`/api/admin/roles/${encodeURIComponent(empCode)}`, { method: 'DELETE' }),
+  },
+
+  customColumns: {
+    list: (): Promise<CustomColumnDef[]> =>
+      request('/api/custom-columns'),
+    create: (payload: {
+      name: string;
+      type: CustomColumnType;
+      dropdownOptions?: string[];
+      defaultValue?: string;
+    }): Promise<CustomColumnDef> =>
+      request('/api/custom-columns', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    update: (
+      id: string,
+      payload: Partial<{
+        name: string;
+        type: CustomColumnType;
+        dropdownOptions: string[];
+        defaultValue: string | null;
+      }>,
+    ): Promise<CustomColumnDef> =>
+      request(`/api/custom-columns/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }),
+    remove: (id: string): Promise<{ ok: boolean }> =>
+      request(`/api/custom-columns/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    queryValues: (
+      registrationIds: string[],
+      columnIds?: string[],
+    ): Promise<CustomColumnValue[]> =>
+      request('/api/custom-columns/values/query', {
+        method: 'POST',
+        body: JSON.stringify({ registrationIds, columnIds }),
+      }),
+    upsertValue: (
+      columnId: string,
+      registrationId: string,
+      value: string | null,
+    ): Promise<CustomColumnValue> =>
+      request(
+        `/api/custom-columns/${encodeURIComponent(columnId)}/values/${encodeURIComponent(registrationId)}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ value }),
+        },
+      ),
   },
 };

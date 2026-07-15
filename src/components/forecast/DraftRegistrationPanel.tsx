@@ -116,13 +116,16 @@ function emptyRegistration(id = ''): Registration {
     endUserExportControl: '',
     endUserName: '',
     productName: '',
+    productNamePud: '',
+    gradeUfa: '',
+    gradeSap: '',
     column1: '',
     carryInETD: 0,
     carryOutETD: 0,
     carryInLoading: 0,
     carryOutLoading: 0,
     priceFormula: 'CPL',
-    spread: 0,
+    spread: null,
   };
 }
 

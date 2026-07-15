@@ -14,6 +14,8 @@ import {
 } from './registrations';
 import { getActiveSnapshotVersion } from '../services/dataSnapshot';
 import {
+  CURRENT_FORECAST_VERSION_NAME,
+  firstWednesdayPeriod,
   formatForecastPeriodForApi,
   monthKeyToEndOfMonth,
   monthKeyToFirstOfMonth,
@@ -838,7 +840,41 @@ type ForecastListQueryParams = {
   registrationIds?: string[];
 };
 
-async function queryForecastValues(params: ForecastListQueryParams) {
+type ForecastQueryRow = {
+  registrationId: string;
+  period: string;
+  granularity: string;
+  version: string;
+  qtyFcst: number;
+  priceFcst: number;
+  amountFcst: number;
+};
+
+function mapForecastQueryRow(
+  row: {
+    registrationId: string;
+    versionName: string;
+    period: Date;
+    granularity: string;
+    qtyFcst: unknown;
+    priceFcst: unknown;
+    amountFcst: unknown;
+  },
+  displayGranularity: string,
+  periodOverride?: string,
+): ForecastQueryRow {
+  return {
+    registrationId: row.registrationId,
+    period: periodOverride ?? formatForecastPeriodForApi(row.period, displayGranularity),
+    granularity: displayGranularity,
+    version: row.versionName,
+    qtyFcst: Number(row.qtyFcst),
+    priceFcst: Number(row.priceFcst),
+    amountFcst: Number(row.amountFcst),
+  };
+}
+
+async function queryForecastValues(params: ForecastListQueryParams): Promise<ForecastQueryRow[]> {
   const { version, startPeriod, endPeriod, granularity } = params;
   const registrationIds = params.registrationIds ?? [];
   const requestedGranularity = granularity === 'week' ? 'week' : granularity === 'month' ? 'month' : undefined;
@@ -849,30 +885,63 @@ async function queryForecastValues(params: ForecastListQueryParams) {
       )
     : requestedGranularity;
 
-  const rows = await prisma.forecastValue.findMany({
-    where: {
-      ...(registrationIds.length > 0 ? { registrationId: { in: registrationIds } } : {}),
-      ...(version ? { versionName: version } : {}),
-      ...(effectiveGranularity ? { granularity: effectiveGranularity } : {}),
-      ...(startPeriod || endPeriod ? {
+  const periodFilter = startPeriod || endPeriod
+    ? {
         period: {
           ...(startPeriod ? { gte: monthKeyToFirstOfMonth(startPeriod) } : {}),
           ...(endPeriod ? { lte: monthKeyToEndOfMonth(endPeriod) } : {}),
         },
-      } : {}),
-    },
-    orderBy: [{ registrationId: 'asc' }, { period: 'asc' }],
-  });
+      }
+    : {};
 
-  return rows.map((r) => ({
-    registrationId: r.registrationId,
-    period: formatForecastPeriodForApi(r.period, r.granularity),
-    granularity: r.granularity,
-    version: r.versionName,
-    qtyFcst: Number(r.qtyFcst),
-    priceFcst: Number(r.priceFcst),
-    amountFcst: Number(r.amountFcst),
-  }));
+  const baseWhere = {
+    ...(registrationIds.length > 0 ? { registrationId: { in: registrationIds } } : {}),
+    ...(version ? { versionName: version } : {}),
+    ...periodFilter,
+  };
+
+  const keyed = new Map<string, ForecastQueryRow>();
+
+  if (effectiveGranularity === 'week') {
+    const weekRows = await prisma.forecastValue.findMany({
+      where: { ...baseWhere, granularity: 'week' },
+      orderBy: [{ registrationId: 'asc' }, { period: 'asc' }],
+    });
+    for (const row of weekRows) {
+      const item = mapForecastQueryRow(row, 'week');
+      keyed.set(`${item.registrationId}|${item.version}|${item.period}`, item);
+    }
+
+    // Current Forecast may hold month rows (e.g. after copy from SepF). Grid expects
+    // first-Wednesday week keys — mirror summary SQL fallback so cells are not blank.
+    if (version === CURRENT_FORECAST_VERSION_NAME) {
+      const monthRows = await prisma.forecastValue.findMany({
+        where: { ...baseWhere, granularity: 'month' },
+        orderBy: [{ registrationId: 'asc' }, { period: 'asc' }],
+      });
+      for (const row of monthRows) {
+        const monthPeriod = formatForecastPeriodForApi(row.period, 'month');
+        const weekPeriod = firstWednesdayPeriod(monthPeriod);
+        const key = `${row.registrationId}|${row.versionName}|${weekPeriod}`;
+        if (keyed.has(key)) continue;
+        keyed.set(key, mapForecastQueryRow(row, 'week', weekPeriod));
+      }
+    }
+  } else {
+    const monthRows = await prisma.forecastValue.findMany({
+      where: { ...baseWhere, granularity: 'month' },
+      orderBy: [{ registrationId: 'asc' }, { period: 'asc' }],
+    });
+    for (const row of monthRows) {
+      const item = mapForecastQueryRow(row, 'month');
+      keyed.set(`${item.registrationId}|${item.version}|${item.period}`, item);
+    }
+  }
+
+  return [...keyed.values()].sort((left, right) =>
+    left.registrationId.localeCompare(right.registrationId)
+    || left.period.localeCompare(right.period)
+  );
 }
 
 /**
@@ -1207,6 +1276,107 @@ router.post('/send-commit-email', async (req, res) => {
     console.error('[forecast] send-commit-email error:', error);
     res.status(400).json({
       error: error instanceof Error ? error.message : 'Failed to send forecast change notification',
+    });
+  }
+});
+
+/**
+ * POST /api/forecast/copy-version
+ * Body: { sourceVersion, targetVersion }
+ * Replaces all forecast values in target with a full copy of source.
+ */
+router.post('/copy-version', async (req, res) => {
+  const sourceVersion = typeof req.body?.sourceVersion === 'string'
+    ? req.body.sourceVersion.trim()
+    : '';
+  const targetVersion = typeof req.body?.targetVersion === 'string'
+    ? req.body.targetVersion.trim()
+    : '';
+
+  if (!sourceVersion || !targetVersion) {
+    return res.status(400).json({ error: 'sourceVersion and targetVersion are required' });
+  }
+  if (sourceVersion === targetVersion) {
+    return res.status(400).json({ error: 'sourceVersion and targetVersion must be different' });
+  }
+
+  const [sourceExists, targetExists] = await Promise.all([
+    prisma.forecastVersion.findUnique({ where: { name: sourceVersion }, select: { name: true } }),
+    prisma.forecastVersion.findUnique({ where: { name: targetVersion }, select: { name: true } }),
+  ]);
+  if (!sourceExists || !targetExists) {
+    return res.status(400).json({ error: 'Unknown forecast version' });
+  }
+
+  try {
+    const copied = await prisma.$transaction(async transaction => {
+      const sourceCount = await transaction.forecastValue.count({
+        where: { versionName: sourceVersion },
+      });
+
+      const batch = await transaction.forecastCommitBatch.create({
+        data: {
+          source: 'version_copy',
+          changedBy: DEFAULT_CHANGED_BY,
+          stampPeriod: DEFAULT_STAMP_PERIOD,
+          recordCount: sourceCount,
+        },
+      });
+
+      // Full replace: Current becomes an exact copy of source (qty/price/amount).
+      await transaction.$executeRaw`
+        DELETE FROM [dbo].[forecast_values]
+        WHERE [versionName] = ${targetVersion}
+      `;
+
+      // Current Forecast grid reads week rows (first-Wednesday keys). When copying
+      // from month-based versions (e.g. SepF), store as week so cells populate.
+      await transaction.$executeRaw`
+        INSERT INTO [dbo].[forecast_values] (
+          [registrationId], [versionName], [period], [granularity],
+          [qtyFcst], [priceFcst], [amountFcst], [lastBatchId], [updatedAt]
+        )
+        SELECT
+          [registrationId],
+          ${targetVersion},
+          CASE
+            WHEN ${targetVersion} = N'Current Forecast' AND [granularity] = N'month' THEN
+              DATEADD(
+                DAY,
+                (7 - (DATEDIFF(DAY, '19000103', CAST(DATEFROMPARTS(YEAR([period]), MONTH([period]), 1) AS DATE)) % 7)) % 7,
+                CAST(DATEFROMPARTS(YEAR([period]), MONTH([period]), 1) AS DATE)
+              )
+            ELSE [period]
+          END,
+          CASE
+            WHEN ${targetVersion} = N'Current Forecast' AND [granularity] = N'month' THEN N'week'
+            ELSE [granularity]
+          END,
+          [qtyFcst],
+          [priceFcst],
+          [amountFcst],
+          ${batch.id},
+          SYSUTCDATETIME()
+        FROM [dbo].[forecast_values]
+        WHERE [versionName] = ${sourceVersion}
+      `;
+
+      return sourceCount;
+    }, {
+      // Large versions (e.g. sepF → Current Forecast) routinely exceed the 5s default.
+      maxWait: 20_000,
+      timeout: 300_000,
+    });
+
+    clearForecastSummaryCache();
+    res.json({ ok: true, copied, sourceVersion, targetVersion });
+  } catch (error) {
+    console.error('[forecast] copy-version error:', error);
+    const message = error instanceof Error ? error.message : 'Failed to copy forecast version';
+    res.status(500).json({
+      error: message.includes('timeout') || message.includes('Transaction already closed')
+        ? 'Copy timed out — try again (large versions can take a few minutes)'
+        : 'Failed to copy forecast version',
     });
   }
 });
