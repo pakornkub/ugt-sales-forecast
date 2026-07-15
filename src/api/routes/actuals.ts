@@ -1,5 +1,10 @@
 import { Prisma } from '@prisma/client';
 import { Router } from 'express';
+import {
+  buildAppModeRegistrationScopeSql,
+  filterRegistrationIdsInAppMode,
+  getAppMode,
+} from '../../config/appMode';
 import prisma from '../../db/prisma';
 import { getActiveSnapshotVersion } from '../services/dataSnapshot';
 
@@ -26,7 +31,11 @@ export type ActualGranularity = 'month' | 'week';
 export function actualRegistrationSourceSql(snapshotVersion: string | null) {
   const crmSource = snapshotVersion
     ? Prisma.sql`
-      SELECT r.registrationId, r.keyForNoCRM
+      SELECT
+        r.registrationId,
+        r.keyForNoCRM,
+        r.businessUnit AS BusinessUnit,
+        r.plantCode AS PlantCode
       FROM dbo.crm_registration_snapshot r
       WHERE r.snapshotVersion = ${snapshotVersion}
         AND r.keyForNoCRM IS NOT NULL
@@ -34,18 +43,30 @@ export function actualRegistrationSourceSql(snapshotVersion: string | null) {
     : Prisma.sql`
       SELECT
         CAST(r.NewKey AS NVARCHAR(200)) AS registrationId,
-        CAST(r.KeyforNoCRM AS NVARCHAR(500)) AS keyForNoCRM
+        CAST(r.KeyforNoCRM AS NVARCHAR(500)) AS keyForNoCRM,
+        CAST(N'' AS NVARCHAR(50)) AS BusinessUnit,
+        CAST(r.PlantCode AS NVARCHAR(100)) AS PlantCode
       FROM dbo.VW_CRM_RegistrationAll_1 r
       WHERE r.MainRegist = 1
         AND r.NewKey IS NOT NULL
         AND r.KeyforNoCRM IS NOT NULL
     `;
+  const modeScopeSql = buildAppModeRegistrationScopeSql('r');
   return Prisma.sql`
-    ${crmSource}
-    UNION ALL
-    SELECT r.id, r.keyForNoCRM
-    FROM dbo.master_data_crm_registrations r
-    WHERE r.mainRegist = 1
+    SELECT registrationId, keyForNoCRM
+    FROM (
+      ${crmSource}
+      UNION ALL
+      SELECT
+        r.id AS registrationId,
+        r.keyForNoCRM AS keyForNoCRM,
+        r.businessUnit AS BusinessUnit,
+        r.plantCode AS PlantCode
+      FROM dbo.master_data_crm_registrations r
+      WHERE r.mainRegist = 1
+    ) r
+    WHERE r.registrationId IS NOT NULL
+      ${modeScopeSql}
   `;
 }
 
@@ -481,7 +502,7 @@ async function getCachedActualRange(
   granularity: ActualGranularity = 'month'
 ) {
   const snapshotPrefix = await snapshotCachePrefix();
-  const cacheKey = `${snapshotPrefix}|${granularity}|${startMonth ?? '*'}|${endMonth ?? '*'}`;
+  const cacheKey = `${getAppMode()}|${snapshotPrefix}|${granularity}|${startMonth ?? '*'}|${endMonth ?? '*'}`;
   const cached = actualRangeCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.promise;
 
@@ -501,7 +522,7 @@ export async function getCachedScopedActualRange(
 ) {
   const snapshotPrefix = await snapshotCachePrefix();
   const sortedIds = [...new Set(registrationIds)].sort((left, right) => left.localeCompare(right));
-  const cacheKey = `${snapshotPrefix}|${granularity}|${startMonth ?? '*'}|${endMonth ?? '*'}|${sortedIds.join('\u001f')}`;
+  const cacheKey = `${getAppMode()}|${snapshotPrefix}|${granularity}|${startMonth ?? '*'}|${endMonth ?? '*'}|${sortedIds.join('\u001f')}`;
   const cached = scopedActualCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.promise;
 
@@ -551,8 +572,9 @@ router.get('/', async (req, res) => {
 
   try {
     if (registrationIds.length > 0) {
+      const allowedIds = await filterRegistrationIdsInAppMode(registrationIds);
       return res.json(
-        await getCachedScopedActualRange(startMonth, endMonth, registrationIds, granularity)
+        await getCachedScopedActualRange(startMonth, endMonth, allowedIds, granularity)
       );
     }
 
@@ -585,15 +607,17 @@ router.post('/query', async (req, res) => {
     granularity?: unknown;
   };
   const granularity = parseGranularity(rawGranularity);
-  const registrationIds = Array.isArray(rawRegistrationIds)
+  const requestedIds = Array.isArray(rawRegistrationIds)
     ? [...new Set(rawRegistrationIds.map(String).filter(Boolean))].slice(0, 5000)
     : [];
 
-  if (registrationIds.length === 0) {
+  if (requestedIds.length === 0) {
     return res.json([]);
   }
 
   try {
+    const registrationIds = await filterRegistrationIdsInAppMode(requestedIds);
+    if (registrationIds.length === 0) return res.json([]);
     res.json(
       await getCachedScopedActualRangeBatched(
         startMonth,
@@ -614,14 +638,19 @@ router.post('/query', async (req, res) => {
  */
 router.post('/latest-price', async (req, res) => {
   const rawRegistrationIds = Array.isArray(req.body?.registrationIds)
-    ? req.body.registrationIds
+    ? (req.body.registrationIds as unknown[])
     : [];
-  const registrationIds = [...new Set(rawRegistrationIds.map(String).filter(Boolean))].slice(0, 5000);
-  if (registrationIds.length === 0) {
+  const normalizedIds = rawRegistrationIds
+    .map(id => String(id ?? '').trim())
+    .filter(id => id.length > 0);
+  const requestedIds = Array.from(new Set(normalizedIds)).slice(0, 5000);
+  if (requestedIds.length === 0) {
     return res.json([]);
   }
 
   try {
+    const registrationIds = await filterRegistrationIdsInAppMode(requestedIds);
+    if (registrationIds.length === 0) return res.json([]);
     const snapshotVersion = await getActiveSnapshotVersion();
     const registrationSource = actualRegistrationSourceSql(snapshotVersion);
     const actualSource = actualSalesSourceSql(snapshotVersion);

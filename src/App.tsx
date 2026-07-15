@@ -53,6 +53,11 @@ import { isCostPlus5Spread, normalizePricingPolicy } from './lib/pricingPolicy';
 import { resolveForecastListGranularity } from './lib/forecastPeriod';
 import { filterRegistrations, matchesCustomColumnFilter } from './components/forecast/forecastFilterUtils';
 import { api, ApiError, FORECAST_BACKGROUND_CHUNK_SIZE, FORECAST_PRIORITY_REGISTRATION_COUNT, REGISTRATION_PAGE_SIZE, formatApiError, type AppConfig, type AuthUser, type SessionPermissions, type SnapshotStatus } from './lib/api';
+import {
+  ensureCanonicalModeInUrl,
+  getActiveClientAppMode,
+  setActiveClientAppMode,
+} from './lib/appModeClient';
 import { effectivePermissions } from './lib/permissions';
 import {
   EMPTY_COLUMN_FILTER,
@@ -100,7 +105,7 @@ const Bar = lazyRechart('Bar');
 
 type AppTab = 'forecast' | 'master' | 'dashboard' | 'overplan' | 'weekly' | 'monthly' | 'yearly' | 'mtp' | 'pdc' | 'suggestion';
 const FORECAST_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
-const FORECAST_SUMMARY_CACHE_PREFIX = 'forecast-summary:v1:';
+const FORECAST_SUMMARY_CACHE_PREFIX = 'forecast-summary:v2:';
 const BU_FILTER_STORAGE_KEY_PREFIX = 'sales-forecast:business-unit-filter:v1';
 const STAMP_PERIOD_OPTIONS = ['No', 'Weekly1', 'Weekly2', 'Weekly3', 'Weekly4', 'Weekly5', 'Monthly1', 'Monthly2'];
 const CURRENT_FORECAST_VERSION = 'Current Forecast';
@@ -1148,11 +1153,19 @@ export default function App() {
     serverRegistrationFiltersRef.current = serverRegistrationFilters;
   }, [serverRegistrationFilters]);
   useEffect(() => {
+    const mode = ensureCanonicalModeInUrl();
+    setActiveClientAppMode(mode);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
+    const mode = getActiveClientAppMode();
+    setActiveClientAppMode(mode);
     api.appConfig.get()
       .then(config => {
         if (cancelled) return;
         setAppConfig(config);
+        setActiveClientAppMode(config.appMode);
         document.title = config.displayName;
         const allowed = new Set(config.allowedBusinessUnits.map(value => value.toLowerCase()));
         setColumnFilters(prev => {
@@ -2735,7 +2748,7 @@ export default function App() {
   useEffect(() => {
     if (activeTab !== 'forecast' || monthsToShow.length === 0) return;
 
-    const cacheKey = `${FORECAST_SUMMARY_CACHE_PREFIX}${forecastSummaryRequestKey}`;
+    const cacheKey = `${FORECAST_SUMMARY_CACHE_PREFIX}${getActiveClientAppMode()}:${forecastSummaryRequestKey}`;
     const cachedRaw = window.localStorage.getItem(cacheKey);
     let hasUsableCache = false;
     if (cachedRaw) {
@@ -3071,7 +3084,7 @@ export default function App() {
           const summary = await api.forecast.summary(currentSummaryRequest);
           setForecastSummary(summary);
           window.localStorage.setItem(
-            `${FORECAST_SUMMARY_CACHE_PREFIX}${currentSummaryRequestKey}`,
+            `${FORECAST_SUMMARY_CACHE_PREFIX}${getActiveClientAppMode()}:${currentSummaryRequestKey}`,
             JSON.stringify({ cachedAt: Date.now(), summary })
           );
         } catch (summaryError) {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { getAppMode, type AppMode } from '../../../config/appMode';
 import type {
   AutoCreateRegistrationPackage,
   ConfirmLegacyImportRecord,
@@ -10,6 +11,7 @@ import { PREVIEW_CACHE_TTL_MS } from './constants';
 
 export type CachedPreviewPayload = {
   previewId: string;
+  appMode: AppMode;
   importMode: ImportMode;
   previewContractVersion: number;
   targetVersion: string;
@@ -28,10 +30,13 @@ export type CachedPreviewPayload = {
 
 const cache = new Map<string, CachedPreviewPayload>();
 
-export function storePreviewCache(payload: Omit<CachedPreviewPayload, 'previewId' | 'expiresAt'>) {
+export function storePreviewCache(
+  payload: Omit<CachedPreviewPayload, 'previewId' | 'expiresAt' | 'appMode'> & { appMode?: AppMode }
+) {
   const previewId = randomUUID();
   const entry: CachedPreviewPayload = {
     ...payload,
+    appMode: payload.appMode ?? getAppMode(),
     previewId,
     expiresAt: Date.now() + PREVIEW_CACHE_TTL_MS,
   };
@@ -46,6 +51,7 @@ export function getPreviewCache(previewId: string) {
     cache.delete(previewId);
     return null;
   }
+  if (entry.appMode !== getAppMode()) return null;
   return entry;
 }
 

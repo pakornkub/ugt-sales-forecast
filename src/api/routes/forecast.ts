@@ -1,5 +1,11 @@
 import { Prisma } from '@prisma/client';
 import { Router } from 'express';
+import {
+  assertRegistrationIdsInAppMode,
+  buildAppModeRegistrationScopeSql,
+  filterRegistrationIdsInAppMode,
+  getAppMode,
+} from '../../config/appMode';
 import prisma from '../../db/prisma';
 import {
   actualPeriodExpression,
@@ -10,6 +16,7 @@ import {
 } from './actuals';
 import {
   getFilteredRegistrationIds,
+  getRegistrationSourceSql,
   normalizeRegistrationFilters,
 } from './registrations';
 import { getActiveSnapshotVersion } from '../services/dataSnapshot';
@@ -694,7 +701,7 @@ async function buildForecastSummary(
 
 router.post('/summary', async (req, res) => {
   const snapshotVersion = await getActiveSnapshotVersion();
-  const cacheKey = `${snapshotVersion ?? 'legacy'}|${stableJson(req.body)}`;
+  const cacheKey = `${getAppMode()}|${snapshotVersion ?? 'legacy'}|${stableJson(req.body)}`;
   const cached = summaryCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     try {
@@ -990,15 +997,17 @@ router.post('/query', async (req, res) => {
     granularity?: string;
     registrationIds?: unknown;
   };
-  const registrationIds = Array.isArray(rawRegistrationIds)
+  const requestedIds = Array.isArray(rawRegistrationIds)
     ? [...new Set(rawRegistrationIds.map(String).filter(Boolean))].slice(0, 5000)
     : [];
 
-  if (registrationIds.length === 0) {
+  if (requestedIds.length === 0) {
     return res.json([]);
   }
 
   try {
+    const registrationIds = await filterRegistrationIdsInAppMode(requestedIds);
+    if (registrationIds.length === 0) return res.json([]);
     res.json(await queryForecastValues({
       version,
       startPeriod,
@@ -1048,6 +1057,9 @@ router.patch('/', async (req, res) => {
   }
 
   try {
+    await assertRegistrationIdsInAppMode(
+      normalizedUpdates.map(update => update.registrationId)
+    );
     const result = await prisma.$transaction(async transaction => {
       for (const versionName of [...new Set(normalizedUpdates.map(update => update.versionName))]) {
         await ensureForecastVersion(
@@ -1199,6 +1211,15 @@ router.patch('/', async (req, res) => {
       changed: result.changed,
     });
   } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: string }).code)
+      : undefined;
+    if (code === 'REGISTRATION_OUT_OF_MODE') {
+      return res.status(403).json({
+        error: error instanceof Error ? error.message : 'Registration outside selected mode',
+        code,
+      });
+    }
     console.error('[forecast] PATCH error:', error);
     res.status(500).json({ error: 'Failed to save forecast data' });
   }
@@ -1309,10 +1330,27 @@ router.post('/copy-version', async (req, res) => {
   }
 
   try {
+    const registrationSourceSql = await getRegistrationSourceSql();
+    const modeScopeSql = buildAppModeRegistrationScopeSql('r');
+    const modeRegistrationCte = Prisma.sql`
+      WITH registration_source AS (${registrationSourceSql}),
+      mode_registrations AS (
+        SELECT DISTINCT LTRIM(RTRIM(CONVERT(NVARCHAR(200), r.RegistrationId))) AS registrationId
+        FROM registration_source r
+        WHERE r.RegistrationId IS NOT NULL
+          ${modeScopeSql}
+      )
+    `;
+
     const copied = await prisma.$transaction(async transaction => {
-      const sourceCount = await transaction.forecastValue.count({
-        where: { versionName: sourceVersion },
-      });
+      const sourceCountRows = await transaction.$queryRaw<Array<{ cnt: number }>>`
+        ${modeRegistrationCte}
+        SELECT COUNT_BIG(1) AS cnt
+        FROM [dbo].[forecast_values] fv
+        INNER JOIN mode_registrations mr ON mr.registrationId = fv.[registrationId]
+        WHERE fv.[versionName] = ${sourceVersion}
+      `;
+      const sourceCount = Number(sourceCountRows[0]?.cnt ?? 0);
 
       const batch = await transaction.forecastCommitBatch.create({
         data: {
@@ -1323,42 +1361,47 @@ router.post('/copy-version', async (req, res) => {
         },
       });
 
-      // Full replace: Current becomes an exact copy of source (qty/price/amount).
+      // Replace only rows belonging to the selected app mode.
       await transaction.$executeRaw`
-        DELETE FROM [dbo].[forecast_values]
-        WHERE [versionName] = ${targetVersion}
+        ${modeRegistrationCte}
+        DELETE fv
+        FROM [dbo].[forecast_values] fv
+        INNER JOIN mode_registrations mr ON mr.registrationId = fv.[registrationId]
+        WHERE fv.[versionName] = ${targetVersion}
       `;
 
       // Current Forecast grid reads week rows (first-Wednesday keys). When copying
       // from month-based versions (e.g. SepF), store as week so cells populate.
       await transaction.$executeRaw`
+        ${modeRegistrationCte}
         INSERT INTO [dbo].[forecast_values] (
           [registrationId], [versionName], [period], [granularity],
           [qtyFcst], [priceFcst], [amountFcst], [lastBatchId], [updatedAt]
         )
         SELECT
-          [registrationId],
+          fv.[registrationId],
           ${targetVersion},
           CASE
-            WHEN ${targetVersion} = N'Current Forecast' AND [granularity] = N'month' THEN
+            WHEN ${targetVersion} = N'Current Forecast' AND fv.[granularity] = N'month' THEN
               DATEADD(
                 DAY,
-                (7 - (DATEDIFF(DAY, '19000103', CAST(DATEFROMPARTS(YEAR([period]), MONTH([period]), 1) AS DATE)) % 7)) % 7,
-                CAST(DATEFROMPARTS(YEAR([period]), MONTH([period]), 1) AS DATE)
+                (7 - (DATEDIFF(DAY, '19000103', CAST(DATEFROMPARTS(YEAR(fv.[period]), MONTH(fv.[period]), 1) AS DATE)) % 7)) % 7,
+                CAST(DATEFROMPARTS(YEAR(fv.[period]), MONTH(fv.[period]), 1) AS DATE)
               )
-            ELSE [period]
+            ELSE fv.[period]
           END,
           CASE
-            WHEN ${targetVersion} = N'Current Forecast' AND [granularity] = N'month' THEN N'week'
-            ELSE [granularity]
+            WHEN ${targetVersion} = N'Current Forecast' AND fv.[granularity] = N'month' THEN N'week'
+            ELSE fv.[granularity]
           END,
-          [qtyFcst],
-          [priceFcst],
-          [amountFcst],
+          fv.[qtyFcst],
+          fv.[priceFcst],
+          fv.[amountFcst],
           ${batch.id},
           SYSUTCDATETIME()
-        FROM [dbo].[forecast_values]
-        WHERE [versionName] = ${sourceVersion}
+        FROM [dbo].[forecast_values] fv
+        INNER JOIN mode_registrations mr ON mr.registrationId = fv.[registrationId]
+        WHERE fv.[versionName] = ${sourceVersion}
       `;
 
       return sourceCount;
